@@ -5,17 +5,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
-from litellm import completion
+import requests
 
 ENV = {"PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1"}
 FORMAT_MSG = "Your output was malformatted.\nPlease include exactly 1 action formatted as:\n\n```bash-action\nls -R\n```"
 SYS = "You are a helpful assistant. When you want to run a command, wrap it in ```bash-action\\n<command>\\n```. To finish, run the exit command."
+BASE_URL = os.getenv("LIGHTSCIENTIST_BASE_URL", "http://100.104.128.29:1234/v1")
+MODEL = os.getenv("LIGHTSCIENTIST_MODEL", "unsloth/qwen3.5-35b-a3b")
+API_KEY = os.getenv("LIGHTSCIENTIST_API_KEY", "lmstudio")
 
 
 class AgentRuntimeError(RuntimeError): ...
 class NonTerminatingError(AgentRuntimeError): ...
 class ActionFormatError(NonTerminatingError): ...
 class ActionTimeoutError(NonTerminatingError): ...
+class ModelRequestError(NonTerminatingError): ...
 class TerminationRequested(AgentRuntimeError): ...
 
 
@@ -31,8 +35,25 @@ class AgentRunResult:
     command_outputs: list[str] = field(default_factory=list)
 
 
-def query_lm(messages: list[dict[str, str]], model: str = "openai/gpt-5.1") -> str:
-    return completion(model=model, messages=messages).choices[0].message.content
+def query_lm(messages: list[dict[str, str]], model: str = MODEL, base_url: str = BASE_URL, api_key: str = API_KEY) -> str:
+    os.environ.update({k: "" for k in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"]})
+    s = requests.Session()
+    s.trust_env = False
+    try:
+        r = s.post(
+            f"{base_url}/chat/completions",
+            json={"model": model, "messages": messages, "temperature": 0.2},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            timeout=30,
+        )
+    except Exception as e:
+        raise ModelRequestError(f"Model request failed: {e}") from e
+    if r.status_code != 200:
+        raise ModelRequestError(f"Model request failed with status {r.status_code}: {r.text[:400]}")
+    try:
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        raise ModelRequestError(f"Model response parse failed: {e}") from e
 
 
 def parse_action(text: str) -> str:
@@ -56,7 +77,7 @@ def execute_action(command: str, cwd: Path | None = None, env: dict[str, str] | 
 
 
 def run_agent(
-    goal: str, *, cwd: str | Path | None = None, model: str = "openai/gpt-5.1", max_steps: int = 8,
+    goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8,
     extra_env: dict[str, str] | None = None, query_fn: Callable[[list[dict[str, str]]], str] | None = None,
     system_prompt: str = SYS, status_cb: Callable[[str, str], None] | None = None,
 ) -> AgentRunResult:

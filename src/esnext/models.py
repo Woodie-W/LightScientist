@@ -14,7 +14,7 @@ class StageRequest:
     """Incoming request handled by the stage management layer."""
 
     target: str
-    output_path: Path
+    output_path: Path | None
     workspace_root: Path
     use_agent: bool = False
 

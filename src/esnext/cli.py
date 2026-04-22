@@ -21,7 +21,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("target", help="Task target: file path, directory path, note text, or agent goal.")
     run_parser.add_argument(
         "--output",
-        required=True,
         help="Path to the markdown artifact written by the execution layer.",
     )
     run_parser.add_argument(
@@ -43,7 +42,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     manager = StageManager()
     request = StageRequest(
         target=args.target,
-        output_path=Path(args.output),
+        output_path=Path(args.output) if args.output else None,
         workspace_root=Path(args.workspace),
         use_agent=args.agent,
     )

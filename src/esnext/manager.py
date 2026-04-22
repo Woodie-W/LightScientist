@@ -23,29 +23,22 @@ class StageManager:
     def _build_runtime_task(self, request: StageRequest) -> RuntimeTask:
         task_id = uuid4().hex[:8]
         workspace_root = request.workspace_root.resolve()
+        output_path = self._build_output_path(request, workspace_root)
         return RuntimeTask(
             task_id=task_id,
             stage_name="stage-2-three-layer-skeleton",
             target=request.target,
-            output_path=Path(request.output_path),
+            output_path=output_path,
             workspace_root=workspace_root,
-            objective=self._build_objective(request.target, workspace_root, request.use_agent),
+            objective=request.target,
             use_agent=request.use_agent,
         )
 
-    def _build_objective(self, target: str, workspace_root: Path, use_agent: bool) -> str:
-        if use_agent:
-            return target
-        path = self._resolve_target(target, workspace_root)
-        if path.is_file():
-            return f"Summarize the file at {target} into a compact markdown artifact."
-        if path.is_dir():
-            return f"Inspect the workspace path at {target} and write a structured inventory."
-        return "Write the provided note text into a markdown artifact."
-
-    def _resolve_target(self, target: str, workspace_root: Path) -> Path:
-        candidate = Path(target)
-        return candidate if candidate.is_absolute() else (workspace_root / candidate).resolve()
+    def _build_output_path(self, request: StageRequest, workspace_root: Path) -> Path:
+        if request.output_path:
+            out = Path(request.output_path)
+            return out if out.is_absolute() else (workspace_root / out)
+        return workspace_root / ("agent-run.md" if request.use_agent else "result.md")
 
 
 # Backward-compatible alias for the earlier two-layer skeleton.

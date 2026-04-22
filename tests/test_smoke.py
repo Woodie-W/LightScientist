@@ -9,37 +9,30 @@ from esnext.models import StageRequest
 from esnext.runtime import RuntimeSupervisor
 
 
-def test_stage_manager_summarize_file_flow(tmp_path: Path) -> None:
-    source = tmp_path / "sample.txt"
-    source.write_text("Line one\n\nLine two\nLine three\n", encoding="utf-8")
-    output = tmp_path / "summary.md"
+def make_agent_manager(*replies: str) -> StageManager:
+    manager = StageManager(runtime_supervisor=RuntimeSupervisor(executor=None))
+    it = iter(replies)
+    manager.runtime_supervisor.executor.agent_query_fn = lambda _: next(it)
+    return manager
 
+
+def test_stage_manager_non_agent_flow_is_not_implemented(tmp_path: Path) -> None:
     manager = StageManager()
-    result = manager.handle(
-        StageRequest(
-            target=str(source),
-            output_path=output,
-            workspace_root=tmp_path,
-        )
-    )
-
-    assert result.status == "completed"
-    assert output.exists()
-    content = output.read_text(encoding="utf-8")
-    assert "# File Summary" in content
-    assert "Line one" in content
-    assert "Stage:" in content
+    result = manager.handle(StageRequest(target="plain text", output_path=tmp_path / "result.md", workspace_root=tmp_path))
+    assert result.status == "failed"
+    assert "Only the agent path is implemented" in result.summary
 
 
 def test_runtime_supervisor_tracks_agent_records(tmp_path: Path) -> None:
-    output = tmp_path / "note.md"
-    supervisor = RuntimeSupervisor()
-    manager = StageManager(runtime_supervisor=supervisor)
+    output = tmp_path / "agent.md"
+    manager = make_agent_manager("```bash-action\nexit\n```")
+    supervisor = manager.runtime_supervisor
     result = manager.handle(
         StageRequest(
             target="Stage 2 three-layer skeleton is running.",
             output_path=output,
             workspace_root=tmp_path,
+            use_agent=True,
         )
     )
 
@@ -52,48 +45,20 @@ def test_runtime_supervisor_tracks_agent_records(tmp_path: Path) -> None:
     assert any("Agent ID:" in note for note in result.notes)
 
 
-def test_stage_manager_write_note_flow(tmp_path: Path) -> None:
-    output = tmp_path / "note.md"
-    manager = StageManager()
-    result = manager.handle(
-        StageRequest(
-            target="Stage 2 three-layer skeleton is running.",
-            output_path=output,
-            workspace_root=tmp_path,
-        )
-    )
-
-    assert result.status == "completed"
-    assert "Wrote note artifact." in result.summary
-    assert output.exists()
-    note_content = output.read_text(encoding="utf-8")
-    assert "Stage 2 three-layer skeleton is running." in note_content
-    assert "local command line only" in note_content
+def test_stage_manager_builds_default_output_path(tmp_path: Path) -> None:
+    manager = make_agent_manager("```bash-action\nexit\n```")
+    result = manager.handle(StageRequest(target="Try and stop cleanly.", output_path=None, workspace_root=tmp_path, use_agent=True))
+    assert result.output_path == tmp_path / "agent-run.md"
 
 
-def test_cli_run_inspect_path(tmp_path: Path, capsys) -> None:
-    target_dir = tmp_path / "workspace"
-    target_dir.mkdir()
-    (target_dir / "a.txt").write_text("a", encoding="utf-8")
-    (target_dir / "b.txt").write_text("b", encoding="utf-8")
-    output = tmp_path / "inspect.md"
-
-    exit_code = main(
-        [
-            "run",
-            str(target_dir),
-            "--output",
-            str(output),
-            "--workspace",
-            str(tmp_path),
-        ]
-    )
-
+def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -> None:
+    manager = make_agent_manager("```bash-action\nexit\n```")
+    monkeypatch.setattr("esnext.cli.StageManager", lambda: manager)
+    exit_code = main(["run", "Try and stop cleanly.", "--workspace", str(tmp_path), "--agent"])
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "status: completed" in captured.out
-    assert output.exists()
-    assert "`a.txt`" in output.read_text(encoding="utf-8")
+    assert "output:" in captured.out
+    assert (tmp_path / "agent-run.md").exists()
 
 
 def test_parse_action_rejects_malformed_output() -> None:
@@ -117,9 +82,7 @@ def test_minimal_agent_run_handles_command_and_exit(tmp_path: Path) -> None:
 
 
 def test_stage_manager_agent_goal_flow(tmp_path: Path) -> None:
-    replies = iter(["bad output", "```bash-action\nexit\n```"])
-    manager = StageManager(runtime_supervisor=RuntimeSupervisor(executor=None))
-    manager.runtime_supervisor.executor.agent_query_fn = lambda _: next(replies)
+    manager = make_agent_manager("bad output", "```bash-action\nexit\n```")
     output = tmp_path / "agent.md"
     result = manager.handle(
         StageRequest(target="Try and stop cleanly.", output_path=output, workspace_root=tmp_path, use_agent=True)
