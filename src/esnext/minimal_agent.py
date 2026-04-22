@@ -8,8 +8,8 @@ from typing import Callable, Literal
 import requests
 
 ENV = {"PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1"}
-FORMAT_MSG = "Your output was malformatted.\nPlease include exactly 1 action formatted as:\n\n```bash-action\nls -R\n```"
-SYS = "You are a helpful assistant. When you want to run a command, wrap it in ```bash-action\\n<command>\\n```. To finish, run the exit command."
+FORMAT_MSG = "Your output was malformatted.\nPlease include exactly 1 block formatted as either:\n\n```bash-action\nls -R\n```\n\nor:\n\n```final-answer\nDone.\n```"
+SYS = "You are a helpful assistant. If you need to run a command, output exactly one ```bash-action\\n<command>\\n``` block. If you have finished the task, output exactly one ```final-answer\\n<answer>\\n``` block. Do not output plain text outside those blocks."
 BASE_URL = os.getenv("LIGHTSCIENTIST_BASE_URL", "http://100.104.128.29:1234/v1")
 MODEL = os.getenv("LIGHTSCIENTIST_MODEL", "unsloth/qwen3.5-35b-a3b")
 API_KEY = os.getenv("LIGHTSCIENTIST_API_KEY", "lmstudio")
@@ -20,12 +20,11 @@ class NonTerminatingError(AgentRuntimeError): ...
 class ActionFormatError(NonTerminatingError): ...
 class ActionTimeoutError(NonTerminatingError): ...
 class ModelRequestError(NonTerminatingError): ...
-class TerminationRequested(AgentRuntimeError): ...
 
 
 @dataclass(slots=True)
 class AgentRunResult:
-    status: Literal["completed", "failed", "terminated", "max_steps_reached"]
+    status: Literal["completed", "failed", "max_steps_reached"]
     messages: list[dict[str, str]]
     last_model_output: str = ""
     last_action: str = ""
@@ -67,16 +66,18 @@ def query_lm(messages: list[dict[str, str]], model: str = MODEL, base_url: str =
         raise ModelRequestError(f"Model response parse failed: {e}") from e
 
 
-def parse_action(text: str) -> str:
-    matches = re.findall(r"```bash-action\s*\n(.*?)\n```", text, re.DOTALL)
-    if len(matches) != 1:
+def parse_action(text: str) -> tuple[str, str]:
+    text = text.replace("\\n", "\n").replace("\\`", "`").strip().rstrip("\\")
+    actions = re.findall(r"```bash-action\s*\n(.*?)\n```", text, re.DOTALL)
+    answers = re.findall(r"```final-answer\s*\n(.*?)\n```", text, re.DOTALL)
+    if len(actions) + len(answers) != 1:
         raise ActionFormatError(FORMAT_MSG)
-    return matches[0].strip()
+    if actions:
+        return "bash-action", actions[0].strip()
+    return "final-answer", answers[0].strip()
 
 
 def execute_action(command: str, cwd: Path | None = None, env: dict[str, str] | None = None, timeout: int = 30) -> str:
-    if command.strip() == "exit":
-        raise TerminationRequested("LM requested to quit")
     try:
         r = subprocess.run(
             command, shell=True, text=True, cwd=str(cwd) if cwd else None, env=os.environ | ENV | (env or {}),
@@ -106,11 +107,17 @@ def run_agent(
             last_lm = query(msgs)
             log_step(lp, f"step-{step}-model-output", last_lm)
             msgs.append({"role": "assistant", "content": last_lm})
-            last_action = parse_action(last_lm)
-            log_step(lp, f"step-{step}-action", last_action)
+            kind, payload = parse_action(last_lm)
+            last_action = payload if kind == "bash-action" else f"final-answer: {payload[:120]}"
+            log_step(lp, f"step-{step}-{kind}", payload)
+            if kind == "final-answer":
+                if status_cb:
+                    status_cb("completed", f"Step {step}: final answer submitted.")
+                log_step(lp, "run-end", f"status: completed\nstep: {step}\nmessage: {payload}")
+                return AgentRunResult("completed", msgs, last_lm, last_action, payload, step, command_outputs=outs)
             if status_cb:
                 status_cb("running", f"Step {step}: running {last_action[:80]}.")
-            last_out = execute_action(last_action, cwd=wd, env=extra_env)
+            last_out = execute_action(payload, cwd=wd, env=extra_env)
             log_step(lp, f"step-{step}-command-output", last_out)
             outs.append(last_out)
             msgs.append({"role": "user", "content": last_out})
@@ -120,9 +127,6 @@ def run_agent(
             if status_cb:
                 status_cb("blocked", last_out)
             msgs.append({"role": "user", "content": last_out})
-        except TerminationRequested as e:
-            log_step(lp, "run-end", f"status: terminated\nstep: {step}\nmessage: {e}")
-            return AgentRunResult("terminated", msgs, last_lm, last_action, str(e), step, command_outputs=outs)
     log_step(lp, "run-end", f"status: max_steps_reached\nstep: {max_steps}\nmessage: Maximum step limit reached.")
     return AgentRunResult("max_steps_reached", msgs, last_lm, last_action, last_out, max_steps, "Maximum step limit reached.", outs)
 
@@ -137,4 +141,4 @@ def cli_main(argv: list[str] | None = None) -> int:
         print(f"last_action: {result.last_action}")
     if result.final_output:
         print(result.final_output)
-    return 0 if result.status in {"completed", "terminated"} else 1
+    return 0 if result.status == "completed" else 1

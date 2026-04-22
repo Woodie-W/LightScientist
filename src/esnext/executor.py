@@ -50,7 +50,7 @@ class ExecutionRuntime:
         )
 
     def _agent_status(self, status: str) -> str:
-        if status in {"completed", "terminated"}:
+        if status == "completed":
             return "completed"
         if status == "max_steps_reached":
             return "failed"

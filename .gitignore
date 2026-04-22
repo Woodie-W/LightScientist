@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 .env
 outputs/
+agent-run.md
+*.log
 
 dist/
 build/

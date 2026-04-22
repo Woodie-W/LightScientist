@@ -25,7 +25,7 @@ def test_stage_manager_non_agent_flow_is_not_implemented(tmp_path: Path) -> None
 
 def test_runtime_supervisor_tracks_agent_records(tmp_path: Path) -> None:
     output = tmp_path / "agent.md"
-    manager = make_agent_manager("```bash-action\nexit\n```")
+    manager = make_agent_manager("```final-answer\nDone.\n```")
     supervisor = manager.runtime_supervisor
     result = manager.handle(
         StageRequest(
@@ -46,13 +46,13 @@ def test_runtime_supervisor_tracks_agent_records(tmp_path: Path) -> None:
 
 
 def test_stage_manager_builds_default_output_path(tmp_path: Path) -> None:
-    manager = make_agent_manager("```bash-action\nexit\n```")
+    manager = make_agent_manager("```final-answer\nDone.\n```")
     result = manager.handle(StageRequest(target="Try and stop cleanly.", output_path=None, workspace_root=tmp_path, use_agent=True))
     assert result.output_path == tmp_path / "agent-run.md"
 
 
 def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -> None:
-    manager = make_agent_manager("```bash-action\nexit\n```")
+    manager = make_agent_manager("```final-answer\nDone.\n```")
     monkeypatch.setattr("esnext.cli.StageManager", lambda: manager)
     exit_code = main(["run", "Try and stop cleanly.", "--workspace", str(tmp_path), "--agent"])
     captured = capsys.readouterr()
@@ -62,7 +62,7 @@ def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -
 
 
 def test_repl_runs_until_quit(tmp_path: Path, capsys, monkeypatch) -> None:
-    manager = make_agent_manager("```bash-action\nexit\n```")
+    manager = make_agent_manager("```final-answer\nDone.\n```")
     inputs = iter(["Try and stop cleanly.", "quit"])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
     exit_code = repl(manager=manager, workspace=tmp_path)
@@ -82,13 +82,25 @@ def test_parse_action_rejects_malformed_output() -> None:
         raise AssertionError("ActionFormatError was not raised")
 
 
-def test_minimal_agent_run_handles_command_and_exit(tmp_path: Path) -> None:
+def test_parse_action_supports_final_answer() -> None:
+    kind, payload = parse_action("```final-answer\nDone.\n```")
+    assert kind == "final-answer"
+    assert payload == "Done."
+
+
+def test_parse_action_supports_escaped_newlines() -> None:
+    kind, payload = parse_action("```bash-action\\npwd\\n```\\")
+    assert kind == "bash-action"
+    assert payload == "pwd"
+
+
+def test_minimal_agent_run_handles_command_and_final_answer(tmp_path: Path) -> None:
     replies = iter([
         "```bash-action\nprintf 'hello from agent'\n```",
-        "```bash-action\nexit\n```",
+        "```final-answer\nDone.\n```",
     ])
     result = run_agent("Say hello", cwd=tmp_path, query_fn=lambda _: next(replies), max_steps=4)
-    assert result.status == "terminated"
+    assert result.status == "completed"
     assert result.step_count == 2
     assert "hello from agent" in "".join(result.command_outputs)
     log_text = (tmp_path / "agent-debug.log").read_text(encoding="utf-8")
@@ -97,8 +109,18 @@ def test_minimal_agent_run_handles_command_and_exit(tmp_path: Path) -> None:
     assert "[run-end]" in log_text
 
 
+def test_minimal_agent_run_handles_final_answer(tmp_path: Path) -> None:
+    replies = iter([
+        "```bash-action\npwd\n```",
+        "```final-answer\n当前工作目录是 /tmp/example\n```",
+    ])
+    result = run_agent("Where am I?", cwd=tmp_path, query_fn=lambda _: next(replies), max_steps=4)
+    assert result.status == "completed"
+    assert result.final_output == "当前工作目录是 /tmp/example"
+
+
 def test_stage_manager_agent_goal_flow(tmp_path: Path) -> None:
-    manager = make_agent_manager("bad output", "```bash-action\nexit\n```")
+    manager = make_agent_manager("bad output", "```final-answer\nDone.\n```")
     output = tmp_path / "agent.md"
     result = manager.handle(
         StageRequest(target="Try and stop cleanly.", output_path=output, workspace_root=tmp_path, use_agent=True)
