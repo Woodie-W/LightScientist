@@ -35,6 +35,17 @@ class AgentRunResult:
     command_outputs: list[str] = field(default_factory=list)
 
 
+def log_step(log_path: Path | None, title: str, body: str = "") -> None:
+    if not log_path:
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(f"[{title}]\n")
+        if body:
+            f.write(body.rstrip() + "\n")
+        f.write("\n")
+
+
 def query_lm(messages: list[dict[str, str]], model: str = MODEL, base_url: str = BASE_URL, api_key: str = API_KEY) -> str:
     os.environ.update({k: "" for k in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"]})
     s = requests.Session()
@@ -79,11 +90,13 @@ def execute_action(command: str, cwd: Path | None = None, env: dict[str, str] | 
 def run_agent(
     goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8,
     extra_env: dict[str, str] | None = None, query_fn: Callable[[list[dict[str, str]]], str] | None = None,
-    system_prompt: str = SYS, status_cb: Callable[[str, str], None] | None = None,
+    system_prompt: str = SYS, status_cb: Callable[[str, str], None] | None = None, log_path: str | Path | None = None,
 ) -> AgentRunResult:
     query = query_fn or (lambda msgs: query_lm(msgs, model))
     wd = Path(cwd).resolve() if cwd else None
+    lp = Path(log_path).resolve() if log_path else (wd / "agent-debug.log" if wd else None)
     msgs = [{"role": "system", "content": system_prompt}, {"role": "user", "content": goal}]
+    log_step(lp, "run-start", f"goal: {goal}\nmodel: {model}\nmax_steps: {max_steps}\ncwd: {wd}")
     last_out = last_action = last_lm = ""
     outs: list[str] = []
     for step in range(1, max_steps + 1):
@@ -91,20 +104,26 @@ def run_agent(
             if status_cb:
                 status_cb("running", f"Step {step}: querying model.")
             last_lm = query(msgs)
+            log_step(lp, f"step-{step}-model-output", last_lm)
             msgs.append({"role": "assistant", "content": last_lm})
             last_action = parse_action(last_lm)
+            log_step(lp, f"step-{step}-action", last_action)
             if status_cb:
                 status_cb("running", f"Step {step}: running {last_action[:80]}.")
             last_out = execute_action(last_action, cwd=wd, env=extra_env)
+            log_step(lp, f"step-{step}-command-output", last_out)
             outs.append(last_out)
             msgs.append({"role": "user", "content": last_out})
         except NonTerminatingError as e:
             last_out = str(e)
+            log_step(lp, f"step-{step}-non-terminating-error", last_out)
             if status_cb:
                 status_cb("blocked", last_out)
             msgs.append({"role": "user", "content": last_out})
         except TerminationRequested as e:
+            log_step(lp, "run-end", f"status: terminated\nstep: {step}\nmessage: {e}")
             return AgentRunResult("terminated", msgs, last_lm, last_action, str(e), step, command_outputs=outs)
+    log_step(lp, "run-end", f"status: max_steps_reached\nstep: {max_steps}\nmessage: Maximum step limit reached.")
     return AgentRunResult("max_steps_reached", msgs, last_lm, last_action, last_out, max_steps, "Maximum step limit reached.", outs)
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from esnext.cli import main
+from esnext.cli import main, repl
 from esnext.manager import StageManager
 from esnext.minimal_agent import ActionFormatError, parse_action, run_agent
 from esnext.models import StageRequest
@@ -61,6 +61,18 @@ def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -
     assert (tmp_path / "agent-run.md").exists()
 
 
+def test_repl_runs_until_quit(tmp_path: Path, capsys, monkeypatch) -> None:
+    manager = make_agent_manager("```bash-action\nexit\n```")
+    inputs = iter(["Try and stop cleanly.", "quit"])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    exit_code = repl(manager=manager, workspace=tmp_path)
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "LightScientist REPL" in captured.out
+    assert "status: completed" in captured.out
+    assert (tmp_path / "agent-run.md").exists()
+
+
 def test_parse_action_rejects_malformed_output() -> None:
     try:
         parse_action("no action here")
@@ -79,6 +91,10 @@ def test_minimal_agent_run_handles_command_and_exit(tmp_path: Path) -> None:
     assert result.status == "terminated"
     assert result.step_count == 2
     assert "hello from agent" in "".join(result.command_outputs)
+    log_text = (tmp_path / "agent-debug.log").read_text(encoding="utf-8")
+    assert "[step-1-model-output]" in log_text
+    assert "printf 'hello from agent'" in log_text
+    assert "[run-end]" in log_text
 
 
 def test_stage_manager_agent_goal_flow(tmp_path: Path) -> None:

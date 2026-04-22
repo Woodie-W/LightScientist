@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import argparse
+import argparse, sys
 from pathlib import Path
 from typing import Sequence
 
 from .manager import StageManager
-from .models import StageRequest
+from .models import ExecutionResult, StageRequest
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,30 +32,54 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    if args.command != "run":
-        parser.error(f"Unsupported command: {args.command}")
-
-    manager = StageManager()
-    request = StageRequest(
-        target=args.target,
-        output_path=Path(args.output) if args.output else None,
-        workspace_root=Path(args.workspace),
-        use_agent=args.agent,
-    )
-    result = manager.handle(request)
-
+def print_result(result: ExecutionResult) -> None:
     print(f"task_id: {result.task_id}")
     print(f"status: {result.status}")
     print(f"summary: {result.summary}")
     print(f"output: {result.output_path}")
-
     if result.notes:
         print("notes:")
         for note in result.notes:
             print(f"- {note}")
 
+
+def run_once(
+    manager: StageManager, target: str, workspace: str | Path = ".", output: str | Path | None = None, use_agent: bool = False
+) -> int:
+    result = manager.handle(
+        StageRequest(
+            target=target,
+            output_path=Path(output) if output else None,
+            workspace_root=Path(workspace),
+            use_agent=use_agent,
+        )
+    )
+    print_result(result)
     return 0 if result.status == "completed" else 1
+
+
+def repl(manager: StageManager | None = None, workspace: str | Path = ".") -> int:
+    manager = manager or StageManager()
+    print("LightScientist REPL. Type `exit` or `quit` to leave.")
+    while True:
+        try:
+            target = input("lightscientist> ").strip()
+        except EOFError:
+            print()
+            return 0
+        if not target:
+            continue
+        if target in {"exit", "quit"}:
+            return 0
+        run_once(manager, target, workspace=workspace, use_agent=True)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        return repl()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command != "run": parser.error(f"Unsupported command: {args.command}")
+    return run_once(StageManager(), args.target, workspace=args.workspace, output=args.output, use_agent=args.agent)

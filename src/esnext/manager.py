@@ -17,10 +17,12 @@ class StageManager:
         self.runtime_supervisor = runtime_supervisor or RuntimeSupervisor()
 
     def handle(self, request: StageRequest) -> ExecutionResult:
+        # TODO: 后期maanager是一个LangGraph状态, 如果外部请求是 询问状态或结果，则不会新建 task(非agent请求)
         task = self._build_runtime_task(request)
         return self.runtime_supervisor.run(task)
 
     def _build_runtime_task(self, request: StageRequest) -> RuntimeTask:
+        # 一个 runttime 负责单个任务, 譬如跑代码 / 寻找灵感 / 完成论文某个部分 
         task_id = uuid4().hex[:8]
         workspace_root = request.workspace_root.resolve()
         output_path = self._build_output_path(request, workspace_root)
