@@ -5,14 +5,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-import requests
+import httpx
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.tools import BaseTool
-from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_core.outputs import ChatResult
+from langchain_openai import ChatOpenAI
 from pydantic import ConfigDict, Field
 
 ENV = {"PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1"}
@@ -20,10 +19,6 @@ SYS = "Use tools when needed. Use execute for shell commands. Answer directly wh
 BASE_URL = os.getenv("LIGHTSCIENTIST_BASE_URL", "http://100.104.128.29:1234/v1")
 MODEL = os.getenv("LIGHTSCIENTIST_MODEL", "unsloth/qwen3.5-35b-a3b")
 API_KEY = os.getenv("LIGHTSCIENTIST_API_KEY", "lmstudio")
-
-
-class AgentRuntimeError(RuntimeError): ...
-class ModelRequestError(AgentRuntimeError): ...
 
 
 @dataclass(slots=True)
@@ -73,12 +68,7 @@ class LoggingShellBackend(LocalShellBackend):
         return result
 
 
-class OpenAICompatChatModel(BaseChatModel):
-    model_name: str = MODEL
-    base_url: str = BASE_URL
-    api_key: str = API_KEY
-    temperature: float = 0.2
-    tools: list[Any] = Field(default_factory=list, exclude=True)
+class LoggingChatOpenAI(ChatOpenAI):
     trace: RunTrace = Field(exclude=True)
     status_cb: Callable[[str, str], None] | None = Field(default=None, exclude=True)
     log_path: Path | None = Field(default=None, exclude=True)
@@ -87,112 +77,53 @@ class OpenAICompatChatModel(BaseChatModel):
 
     @property
     def _llm_type(self) -> str:
-        return "lightscientist-openai-compat"
-
-    def bind_tools(self, tools: list[BaseTool] | Any, **kwargs: Any) -> BaseChatModel:
-        return self.model_copy(update={"tools": list(tools)})
+        return "lightscientist-chatopenai"
 
     def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:
         if self.trace.step_count >= self.max_steps:
             self.trace.max_steps_reached, self.trace.error = True, "Maximum step limit reached."
             log_step(self.log_path, "run-end", f"status: max_steps_reached\nstep: {self.trace.step_count}\nmessage: {self.trace.error}")
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.trace.error))])
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         self.trace.step_count += 1
         step = self.trace.step_count
-        self.trace.messages = [m for msg in messages if (m := self._to_msg(msg))]
+        self.trace.messages = [m for msg in messages if (m := _to_msg(msg))]
         if self.status_cb:
             self.status_cb("running", f"Step {step}: querying model.")
-        payload = {"model": self.model_name, "messages": self.trace.messages, "temperature": self.temperature}
-        if self.tools:
-            payload["tools"], payload["tool_choice"] = [convert_to_openai_tool(t) for t in self.tools], "auto"
-        raw = self._request(payload)
-        msg = raw["choices"][0]["message"]
-        self.trace.last_model_output = json.dumps(msg, ensure_ascii=False, indent=2)
+        result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        msg = result.generations[0].message
+        self.trace.last_model_output = _dump_msg(msg)
         log_step(self.log_path, f"step-{step}-model-output", self.trace.last_model_output)
-        tool_calls = [{"name": t["function"]["name"], "args": json.loads(t["function"].get("arguments") or "{}"), "id": t["id"], "type": "tool_call"} for t in msg.get("tool_calls", [])]
-        if tool_calls:
-            call = tool_calls[0]
+        if msg.tool_calls:
+            call = msg.tool_calls[0]
             self.trace.last_action = f'{call["name"]}: {call["args"]}'
             log_step(self.log_path, f"step-{step}-tool-call", self.trace.last_action)
             if self.status_cb:
                 self.status_cb("running", f'Step {step}: calling {call["name"]}.')
         else:
-            self.trace.final_output = str(msg.get("content") or "")
+            self.trace.final_output = str(msg.content or "")
             log_step(self.log_path, f"step-{step}-final-answer", self.trace.final_output)
             if self.status_cb:
                 self.status_cb("completed", f"Step {step}: final answer submitted.")
             log_step(self.log_path, "run-end", f"status: completed\nstep: {step}\nmessage: {self.trace.final_output}")
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=str(msg.get("content") or ""), tool_calls=tool_calls))])
-
-    def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
-        os.environ.update({k: "" for k in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"]})
-        s = requests.Session()
-        s.trust_env = False
-        try:
-            r = s.post(f"{self.base_url}/chat/completions", json=payload, headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}, timeout=30)
-        except Exception as e:
-            raise ModelRequestError(f"Model request failed: {e}") from e
-        if r.status_code != 200:
-            raise ModelRequestError(f"Model request failed with status {r.status_code}: {r.text[:400]}")
-        try:
-            return r.json()
-        except Exception as e:
-            raise ModelRequestError(f"Model response parse failed: {e}") from e
-
-    def _to_msg(self, msg: BaseMessage) -> dict[str, Any] | None:
-        if isinstance(msg, SystemMessage):
-            return {"role": "system", "content": str(msg.content)}
-        if isinstance(msg, HumanMessage):
-            return {"role": "user", "content": str(msg.content)}
-        if isinstance(msg, ToolMessage):
-            return {"role": "tool", "tool_call_id": msg.tool_call_id, "content": str(msg.content)}
-        if isinstance(msg, AIMessage):
-            out = {"role": "assistant", "content": str(msg.content or "")}
-            if msg.tool_calls:
-                out["tool_calls"] = [{"id": t["id"], "type": "function", "function": {"name": t["name"], "arguments": json.dumps(t.get("args", {}), ensure_ascii=False)}} for t in msg.tool_calls]
-            return out
-        return None
+        return result
 
 
-class ScriptedChatModel(BaseChatModel):
-    query_fn: Callable[[list[dict[str, Any]]], str] = Field(exclude=True)
-    trace: RunTrace = Field(exclude=True)
-    status_cb: Callable[[str, str], None] | None = Field(default=None, exclude=True)
-    log_path: Path | None = Field(default=None, exclude=True)
-    max_steps: int = 8
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @property
-    def _llm_type(self) -> str:
-        return "lightscientist-scripted"
-
-    def bind_tools(self, tools: list[BaseTool] | Any, **kwargs: Any) -> BaseChatModel:
-        return self
-
-    def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:
-        if self.trace.step_count >= self.max_steps:
-            self.trace.max_steps_reached, self.trace.error = True, "Maximum step limit reached."
-            log_step(self.log_path, "run-end", f"status: max_steps_reached\nstep: {self.trace.step_count}\nmessage: {self.trace.error}")
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.trace.error))])
-        self.trace.step_count += 1
-        step = self.trace.step_count
-        self.trace.messages = [m for msg in messages if (m := OpenAICompatChatModel._to_msg(self, msg))]
-        if self.status_cb:
-            self.status_cb("running", f"Step {step}: querying model.")
-        raw = self.query_fn(self.trace.messages)
-        self.trace.last_model_output = raw
-        log_step(self.log_path, f"step-{step}-model-output", raw)
-        if raw.startswith("tool:"):
-            cmd = raw.split(":", 1)[1].strip()
-            self.trace.last_action = f"execute: {cmd}"
-            log_step(self.log_path, f"step-{step}-tool-call", self.trace.last_action)
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "execute", "args": {"command": cmd}, "id": f"call_{step}", "type": "tool_call"}]))])
-        self.trace.final_output = raw.removeprefix("answer:").strip()
-        log_step(self.log_path, f"step-{step}-final-answer", self.trace.final_output)
-        if self.status_cb:
-            self.status_cb("completed", f"Step {step}: final answer submitted.")
-        log_step(self.log_path, "run-end", f"status: completed\nstep: {step}\nmessage: {self.trace.final_output}")
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.trace.final_output))])
+def build_chat_model(
+    *, trace: RunTrace, status_cb: Callable[[str, str], None] | None, log_path: Path, model: str, max_steps: int,
+    query_fn: Callable[[list[dict[str, Any]]], str] | None = None,
+) -> BaseChatModel:
+    return LoggingChatOpenAI(
+        model=model,
+        base_url=BASE_URL,
+        api_key=API_KEY,
+        temperature=0.2,
+        use_responses_api=False,
+        http_client=httpx.Client(trust_env=False),
+        trace=trace,
+        status_cb=status_cb,
+        log_path=log_path,
+        max_steps=max_steps,
+    )
 
 
 def run_agent(
@@ -204,7 +135,7 @@ def run_agent(
     lp = Path(log_path).resolve() if log_path else (wd / "agent-debug.log")
     trace = RunTrace()
     log_step(lp, "run-start", f"goal: {goal}\nmodel: {model}\nmax_steps: {max_steps}\ncwd: {wd}")
-    chat = ScriptedChatModel(query_fn=query_fn, trace=trace, status_cb=status_cb, log_path=lp, max_steps=max_steps) if query_fn else OpenAICompatChatModel(model_name=model, trace=trace, status_cb=status_cb, log_path=lp, max_steps=max_steps)
+    chat = build_chat_model(trace=trace, status_cb=status_cb, log_path=lp, model=model, max_steps=max_steps, query_fn=query_fn)
     agent = create_deep_agent(model=chat, system_prompt=system_prompt, backend=LoggingShellBackend(trace=trace, log_path=lp, root_dir=wd), subagents=[], middleware=(), checkpointer=False)
     try:
         result = agent.invoke({"messages": [{"role": "user", "content": goal}]}, config={"recursion_limit": max_steps * 8 + 20})
@@ -215,6 +146,22 @@ def run_agent(
     final = trace.final_output or _final_from_result(result)
     status = "max_steps_reached" if trace.max_steps_reached else "completed"
     return AgentRunResult(status, trace.messages, trace.last_model_output, trace.last_action, final, trace.step_count, trace.error, trace.command_outputs)
+
+
+def _to_msg(msg: BaseMessage) -> dict[str, str] | None:
+    if isinstance(msg, SystemMessage):
+        return {"role": "system", "content": str(msg.content)}
+    if isinstance(msg, HumanMessage):
+        return {"role": "user", "content": str(msg.content)}
+    if isinstance(msg, ToolMessage):
+        return {"role": "tool", "content": str(msg.content)}
+    if isinstance(msg, AIMessage):
+        return {"role": "assistant", "content": str(msg.content or "")}
+    return None
+
+
+def _dump_msg(msg: AIMessage) -> str:
+    return json.dumps({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls}, ensure_ascii=False, indent=2)
 
 
 def _final_from_result(result: Any) -> str:

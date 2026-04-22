@@ -52,7 +52,9 @@ class AgentRecord:
     task_id: str
     objective: str
     status: ExecutionState
+    thread_id: str = ""
     progress_text: str = ""
+    output_path: Path | None = None
     result: ExecutionResult | None = None
 
 
