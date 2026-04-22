@@ -9,6 +9,8 @@ from typing import Sequence
 from .manager import StageManager
 from .models import ExecutionResult, StageRequest
 
+OK_STATES = {"completed", "waiting", "background"}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -55,7 +57,7 @@ def run_once(
         )
     )
     print_result(result)
-    return 0 if result.status == "completed" else 1
+    return 0 if result.status in OK_STATES else 1
 
 
 def repl(manager: StageManager | None = None, workspace: str | Path = ".") -> int:

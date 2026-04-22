@@ -9,8 +9,8 @@ from pydantic import ConfigDict, Field
 
 from esnext.cli import main, repl
 from esnext.manager import StageManager
-from esnext.minimal_agent import run_agent
-from esnext.models import StageRequest
+from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
+from esnext.models import RuntimeTask, StageRequest
 from esnext.runtime import RuntimeSupervisor
 
 
@@ -45,11 +45,11 @@ class ScriptedChatModel(BaseChatModel):
             trace.last_action = f"execute: {cmd}"
             log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
             return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "execute", "args": {"command": cmd}, "id": f"call_{step}", "type": "tool_call"}]))])
-        trace.final_output = raw.removeprefix("answer:").strip()
+        trace.status, trace.final_output = _status_from_output(raw.removeprefix("answer:").strip())
         log_step(self.log_path, f"step-{step}-final-answer", trace.final_output)
         if self.status_cb:
-            self.status_cb("completed", f"Step {step}: final answer submitted.")
-        log_step(self.log_path, "run-end", f"status: completed\nstep: {step}\nmessage: {trace.final_output}")
+            self.status_cb(trace.status, f"Step {step}: {trace.final_output or trace.status}.")
+        log_step(self.log_path, "run-end", f"status: {trace.status}\nstep: {step}\nmessage: {trace.final_output}")
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=trace.final_output))])
 
     def _to_msg(self, msg: BaseMessage):
@@ -103,6 +103,7 @@ def test_runtime_supervisor_tracks_agent_records(tmp_path: Path, monkeypatch) ->
     agents = supervisor.list_agents()
     assert len(agents) == 1
     assert agents[0].status == "completed"
+    assert agents[0].thread_id
     assert agents[0].result is result
     assert agents[0].progress_text == result.summary
     assert any("Agent ID:" in note for note in result.notes)
@@ -169,6 +170,80 @@ def test_minimal_agent_run_handles_final_answer(tmp_path: Path) -> None:
         result = run_agent("Where am I?", cwd=tmp_path, max_steps=4)
     assert result.status == "completed"
     assert result.final_output == "当前工作目录是 /tmp/example"
+
+
+def test_persistent_agent_session_can_resume(tmp_path: Path, monkeypatch) -> None:
+    replies = iter(["answer: First answer.", "answer: Second answer."])
+
+    monkeypatch.setattr(
+        "esnext.minimal_agent.build_chat_model",
+        lambda **kw: ScriptedChatModel(
+            replies=[next(replies)],
+            trace=kw["trace"],
+            status_cb=kw["status_cb"],
+            log_path=kw["log_path"],
+        ),
+    )
+    session = start_agent_session("First turn", cwd=tmp_path)
+    first = session.last_result
+    second = resume_agent_session(session, "Second turn")
+    assert first is not None
+    assert first.thread_id == second.thread_id
+    assert first.session_id == second.session_id
+    assert second.final_output == "Second answer."
+    log_text = (tmp_path / "agent-debug.log").read_text(encoding="utf-8")
+    assert "[run-start]" in log_text
+    assert "[resume-start]" in log_text
+
+
+def test_runtime_supervisor_can_resume_agent(tmp_path: Path, monkeypatch) -> None:
+    replies = iter(["answer: First answer.", "answer: Second answer."])
+
+    monkeypatch.setattr(
+        "esnext.minimal_agent.build_chat_model",
+        lambda **kw: ScriptedChatModel(
+            replies=[next(replies)],
+            trace=kw["trace"],
+            status_cb=kw["status_cb"],
+            log_path=kw["log_path"],
+        ),
+    )
+    supervisor = RuntimeSupervisor()
+    start = supervisor.start(
+        RuntimeTask("task1234", "interactive", "First turn", tmp_path / "agent.md", tmp_path, "First turn", True)
+    )
+    agent_id = supervisor.list_agents()[0].agent_id
+    resumed = supervisor.resume(agent_id, "Second turn")
+    assert start.status == "completed"
+    assert resumed.status == "completed"
+    assert supervisor.get_agent(agent_id).thread_id
+
+
+def test_minimal_agent_run_can_suspend_waiting(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    with patch("esnext.minimal_agent.build_chat_model") as build:
+        build.side_effect = lambda **kw: ScriptedChatModel(
+            replies=["answer: WAITING: 请提供实验参数。"],
+            trace=kw["trace"],
+            status_cb=kw["status_cb"],
+            log_path=kw["log_path"],
+        )
+        result = run_agent("Need more input", cwd=tmp_path, max_steps=4)
+    assert result.status == "waiting"
+    assert result.final_output == "请提供实验参数。"
+
+
+def test_runtime_supervisor_preserves_waiting_status(tmp_path: Path, monkeypatch) -> None:
+    manager = make_agent_manager(monkeypatch, "answer: WAITING: 请补充数据集路径。")
+    result = manager.handle(
+        StageRequest(target="Need dataset path", output_path=tmp_path / "agent.md", workspace_root=tmp_path, use_agent=True)
+    )
+    agent = manager.runtime_supervisor.list_agents()[0]
+    assert result.status == "waiting"
+    assert result.summary == "请补充数据集路径。"
+    assert agent.status == "waiting"
+    assert agent.progress_text == "请补充数据集路径。"
 
 
 def test_stage_manager_agent_goal_flow(tmp_path: Path, monkeypatch) -> None:

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-ExecutionState = Literal["running", "blocked", "waiting", "background", "completed", "failed", "cancelled"]
+ExecutionState = Literal["running", "waiting", "background", "completed", "failed", "cancelled"]
 
 
 @dataclass(slots=True)
