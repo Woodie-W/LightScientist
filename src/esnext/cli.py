@@ -12,7 +12,7 @@ from .models import StageRequest
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="esnext",
+        prog="lightscientist",
         description="Current LightScientist three-layer skeleton prototype.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

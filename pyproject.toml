@@ -1,7 +1,7 @@
 [project]
-name = "evoscientist-next"
+name = "lightscientist"
 version = "0.1.0"
-description = "Minimal two-layer direct architecture prototype for the next EvoScientist project."
+description = "Three-layer control structure prototype for LightScientist."
 requires-python = ">=3.11"
 dependencies = []
 
@@ -9,6 +9,7 @@ dependencies = []
 dev = ["pytest>=8.0"]
 
 [project.scripts]
+lightscientist = "esnext.cli:main"
 esnext = "esnext.cli:main"
 
 [build-system]
