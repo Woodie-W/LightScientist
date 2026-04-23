@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import threading
+import threading, time
 from collections import deque
 from dataclasses import dataclass
 
@@ -103,6 +103,7 @@ class RuntimeSupervisor:
                     self._queue_ready.wait()
                 item = self._queue.popleft()
             self._handle_update(item.agent_id, item.update)
+            time.sleep(1)
 
     def _handle_update(self, agent_id: str, update: RuntimeUpdate) -> None:
         if agent_id not in self._agents:

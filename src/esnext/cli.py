@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import argparse, sys
+import argparse, sys, time
 from pathlib import Path
 from typing import Sequence
 
@@ -70,10 +70,12 @@ def repl(manager: StageManager | None = None, workspace: str | Path = ".") -> in
             print()
             return 0
         if not target:
+            time.sleep(0.05)
             continue
         if target in {"exit", "quit"}:
             return 0
         run_once(manager, target, workspace=workspace, use_agent=True)
+        time.sleep(0.05)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
