@@ -39,6 +39,7 @@ class RuntimeSupervisor:
     def __init__(self, executor: ExecutionRuntime | None = None) -> None:
         self.executor = executor or ExecutionRuntime()
         self._agents: dict[str, AgentRecord] = {}
+        self._tasks: dict[str, dict[str, object]] = {}
         self._waiters: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._queue: deque[RuntimeEnvelope] = deque()
@@ -50,6 +51,13 @@ class RuntimeSupervisor:
         agent_id = f"agent-{task.task_id}"
         with self._lock:
             self._agents[agent_id] = AgentRecord(agent_id, task.task_id, task.objective, "running", progress_text="Worker created.", output_path=task.output_path)
+            self._tasks[task.task_id] = {
+                "task_id": task.task_id,
+                "objective": task.objective,
+                "worker_ids": [agent_id],
+                "status": "running",
+                "summary": "Worker created.",
+            }
             self._waiters[agent_id] = threading.Event()
         self._push_update(agent_id, "running", "Worker created.")
         threading.Thread(target=self._run, args=("start", agent_id, task), daemon=True, name=f"runtime-start-{agent_id}").start()
@@ -70,6 +78,12 @@ class RuntimeSupervisor:
 
     def list_agents(self) -> list[AgentRecord]:
         return list(self._agents.values())
+
+    def get_task(self, task_id: str) -> dict[str, object] | None:
+        return self._tasks.get(task_id)
+
+    def list_tasks(self) -> list[dict[str, object]]:
+        return list(self._tasks.values())
 
     def _run(self, mode: str, agent_id: str, arg: RuntimeTask | str) -> None:
         try:
@@ -111,12 +125,44 @@ class RuntimeSupervisor:
         old_status = self._agents[agent_id].status
         self._update_agent(agent_id, update.status, update.text, update.result, update.thread_id)
         self._handle_status_change(agent_id, old_status, update.status)
+        self._supervise_task(self._agents[agent_id].task_id)
         if update.result and agent_id in self._waiters:
             self._waiters[agent_id].set()
 
     def _handle_status_change(self, agent_id: str, old: str, new: str) -> None:
         if old == new:
             return
+
+    def _supervise_task(self, task_id: str) -> None:
+        task = self._tasks.get(task_id)
+        if not task:
+            return
+        workers = [self._agents[agent_id] for agent_id in task["worker_ids"] if agent_id in self._agents]
+        if not workers:
+            task["status"], task["summary"] = "failed", "No active workers."
+            return
+        if any(worker.status == "completed" for worker in workers):
+            worker = next(worker for worker in workers if worker.status == "completed")
+            task["status"] = "completed"
+            task["summary"] = worker.result.summary if worker.result else worker.progress_text
+            return
+        if any(worker.status == "running" for worker in workers):
+            worker = next(worker for worker in workers if worker.status == "running")
+            task["status"], task["summary"] = "running", worker.progress_text
+            return
+        if any(worker.status == "waiting" for worker in workers):
+            worker = next(worker for worker in workers if worker.status == "waiting")
+            task["status"], task["summary"] = "waiting", worker.pending_text or worker.progress_text
+            return
+        if any(worker.status == "background" for worker in workers):
+            worker = next(worker for worker in workers if worker.status == "background")
+            task["status"], task["summary"] = "background", worker.pending_text or worker.progress_text
+            return
+        if all(worker.status == "cancelled" for worker in workers):
+            task["status"], task["summary"] = "cancelled", "All workers cancelled."
+            return
+        task["status"] = "failed"
+        task["summary"] = next((worker.progress_text for worker in workers if worker.progress_text), "All workers failed.")
 
     def _update_agent(
         self, agent_id: str, status: str, progress_text: str = "", result: ExecutionResult | None = None,
