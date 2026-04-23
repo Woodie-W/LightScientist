@@ -6,16 +6,15 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from deepagents import create_deep_agent
-from deepagents.backends import LocalShellBackend
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 from langchain.tools import tool
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from .backends import LoggingWorkspaceBackend, log_step
 from .model_config import MODEL, build_chat_model
 
-ENV = {"PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1"}
 SYS = (
     "Use the built-in workspace tools when needed: execute, read_file, write_file, edit_file, grep, glob, ls, "
     "write_todos, read_todos, and task. "
@@ -73,61 +72,6 @@ class AgentSession:
     tools: list[Any] = field(default_factory=list)
     resume_mode: Literal["message", "interrupt"] = "message"
     last_result: AgentRunResult | None = None
-
-
-def log_step(path: Path | None, title: str, body: str = "") -> None:
-    if not path: return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(f"[{title}]\n")
-        if body: f.write(body.rstrip() + "\n")
-        f.write("\n")
-
-
-class LoggingWorkspaceBackend(LocalShellBackend):
-    def __init__(self, *, trace: RunTrace, log_path: Path, root_dir: Path, timeout: int = 30) -> None:
-        super().__init__(root_dir=root_dir, virtual_mode=True, timeout=timeout, env=ENV, inherit_env=False)
-        self.trace, self.log_path = trace, log_path
-
-    def _log_backend_output(self, name: str, output: Any) -> None:
-        body = output if isinstance(output, str) else str(output)
-        self.trace.command_outputs.append(f"[{name}]\n{body}")
-        log_step(self.log_path, f"step-{self.trace.step_count}-{name}-output", body)
-
-    def ls(self, path: str):
-        result = super().ls(path)
-        self._log_backend_output("ls", result)
-        return result
-
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000):
-        result = super().read(file_path, offset=offset, limit=limit)
-        self._log_backend_output("read_file", result)
-        return result
-
-    def write(self, file_path: str, content: str):
-        result = super().write(file_path, content)
-        self._log_backend_output("write_file", result)
-        return result
-
-    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False):
-        result = super().edit(file_path, old_string, new_string, replace_all=replace_all)
-        self._log_backend_output("edit_file", result)
-        return result
-
-    def glob(self, pattern: str, path: str = "/"):
-        result = super().glob(pattern, path=path)
-        self._log_backend_output("glob", result)
-        return result
-
-    def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
-        result = super().grep(pattern, path=path, glob=glob)
-        self._log_backend_output("grep", result)
-        return result
-
-    def execute(self, command: str, *, timeout: int | None = None):
-        result = super().execute(command, timeout=timeout)
-        self._log_backend_output("execute", result.output)
-        return result
 
 
 def start_agent_session(
