@@ -117,7 +117,7 @@ class RuntimeSupervisor:
                     self._queue_ready.wait()
                 item = self._queue.popleft()
             self._handle_update(item.agent_id, item.update)
-            time.sleep(1)
+            time.sleep(0.2)
 
     def _handle_update(self, agent_id: str, update: RuntimeUpdate) -> None:
         if agent_id not in self._agents:

@@ -121,7 +121,8 @@ The second-layer controller remains responsible for:
 
 - receiving worker events
 - updating shared records
-- invoking the supervisor agent
+- enqueueing worker events
+- forwarding events to the supervisor agent only when the supervisor is idle
 
 The second-layer agent is responsible for:
 
@@ -132,9 +133,11 @@ So the flow becomes:
 1. third-layer worker emits an event
 2. second-layer controller receives the event
 3. second-layer controller updates records
-4. second-layer controller invokes the supervisor agent
-5. supervisor agent queries status if needed
-6. supervisor agent calls `resume(...)`, `start(...)`, or does nothing
+4. second-layer controller appends the event into its deque
+5. if the supervisor agent is idle, the controller pops one event and forwards it
+6. if the supervisor agent is busy, events remain queued
+7. supervisor agent queries status if needed
+8. supervisor agent calls `resume(...)`, `start(...)`, or does nothing
 
 ## Prompt Direction
 
