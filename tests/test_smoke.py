@@ -35,11 +35,13 @@ class ScriptedChatModel(BaseChatModel):
         trace.messages = [m for msg in messages if (m := self._to_msg(msg))]
         if self.status_cb:
             self.status_cb("running", f"Step {step}: querying model.")
-        raw = self.replies.pop(0)
+        raw = self.replies.pop(0) if self.replies else ""
         trace.last_model_output = raw
         from esnext.minimal_agent import log_step
 
         log_step(self.log_path, f"step-{step}-model-output", raw)
+        if not raw:
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content=""))])
         if raw.startswith("tool:"):
             spec = raw.split(":", 1)[1].strip()
             name, sep, arg = spec.partition("|")
@@ -75,7 +77,7 @@ class ScriptedChatModel(BaseChatModel):
 def patch_scripted_model(monkeypatch, *replies: str) -> None:
     monkeypatch.setattr(
         "esnext.minimal_agent.build_chat_model",
-        lambda *, trace, status_cb, log_path, model, max_steps: ScriptedChatModel(
+        lambda *, trace, status_cb, log_path, model, max_steps, **_: ScriptedChatModel(
             replies=list(replies), trace=trace, status_cb=status_cb, log_path=log_path
         ),
     )

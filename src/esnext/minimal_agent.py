@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json, os, sys, uuid
+import json, sys, uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
-import httpx
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from langgraph.checkpoint.memory import MemorySaver
@@ -13,9 +12,8 @@ from langgraph.types import Command, interrupt
 from langchain.tools import tool
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.outputs import ChatResult
-from langchain_openai import ChatOpenAI
-from pydantic import ConfigDict, Field
+
+from .model_config import MODEL, build_chat_model
 
 ENV = {"PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1"}
 SYS = (
@@ -24,9 +22,6 @@ SYS = (
     "If a long-running job should continue later, answer with 'BACKGROUND: <status>'. "
     "Otherwise answer directly when the task is done."
 )
-BASE_URL = os.getenv("LIGHTSCIENTIST_BASE_URL", "http://100.104.128.29:1234/v1")
-MODEL = os.getenv("LIGHTSCIENTIST_MODEL", "unsloth/qwen3.5-35b-a3b")
-API_KEY = os.getenv("LIGHTSCIENTIST_API_KEY", "lmstudio")
 
 
 @dataclass(slots=True)
@@ -58,7 +53,7 @@ class RunTrace:
 
 # 类似于 hooks
 @tool
-def ask_input(questAgentSessioion: str) -> str:
+def ask_input(question: str) -> str:
     """Ask the upper layer for more input and pause the graph."""
     response = interrupt({"type": "waiting", "question": question})
     return str(response or "")
@@ -74,6 +69,7 @@ class AgentSession:
     max_steps: int
     system_prompt: str
     checkpointer: MemorySaver
+    resume_mode: Literal["message", "interrupt"] = "message"
     last_result: AgentRunResult | None = None
 
 
@@ -85,7 +81,7 @@ def log_step(path: Path | None, title: str, body: str = "") -> None:
         if body: f.write(body.rstrip() + "\n")
         f.write("\n")
 
-# TODO 需要详解
+
 class LoggingShellBackend(LocalShellBackend):
     def __init__(self, *, trace: RunTrace, log_path: Path, root_dir: Path, timeout: int = 30) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True, timeout=timeout, env=ENV, inherit_env=False)
@@ -98,71 +94,6 @@ class LoggingShellBackend(LocalShellBackend):
         return result
 
 
-class LoggingChatOpenAI(ChatOpenAI):
-    trace: RunTrace = Field(exclude=True)
-    status_cb: Callable[[str, str], None] | None = Field(default=None, exclude=True)
-    log_path: Path | None = Field(default=None, exclude=True)
-    max_steps: int = 8 # TODO 测试完毕后关闭步长限制
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @property
-    def _llm_type(self) -> str:
-        return "lightscientist-chatopenai"
-
-    def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:
-        if self.trace.step_count >= self.max_steps:
-            self.trace.status, self.trace.max_steps_reached, self.trace.error = "failed", True, "Maximum step limit reached."
-            log_step(self.log_path, "run-end", f"status: max_steps_reached\nstep: {self.trace.step_count}\nmessage: {self.trace.error}")
-            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-        self.trace.step_count += 1
-        step = self.trace.step_count
-        self.trace.messages = [m for msg in messages if (m := _to_msg(msg))]
-        if self.status_cb:
-            self.status_cb("running", f"Step {step}: querying model.")
-        result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-        msg = result.generations[0].message
-        self.trace.last_model_output = _dump_msg(msg)
-        log_step(self.log_path, f"step-{step}-model-output", self.trace.last_model_output)
-        if msg.tool_calls:
-            call = msg.tool_calls[0]
-            self.trace.last_action = f'{call["name"]}: {call["args"]}'
-            log_step(self.log_path, f"step-{step}-tool-call", self.trace.last_action)
-            if self.status_cb:
-                self.status_cb("running", f'Step {step}: calling {call["name"]}.')
-        else:
-            self.trace.status, self.trace.final_output = _status_from_output(str(msg.content or ""))
-            log_step(self.log_path, f"step-{step}-final-answer", self.trace.final_output)
-            if self.status_cb:
-                self.status_cb(self.trace.status, f"Step {step}: {self.trace.final_output or self.trace.status}.")
-            log_step(self.log_path, "run-end", f"status: {self.trace.status}\nstep: {step}\nmessage: {self.trace.final_output}")
-        return result
-
-# TODO: 把 build_chat_model 和 api 配置独立出去，放在一个新的源文件内作为模型配置
-def build_chat_model(
-    *, trace: RunTrace, status_cb: Callable[[str, str], None] | None, log_path: Path, model: str, max_steps: int,
-) -> BaseChatModel:
-    return LoggingChatOpenAI(
-        model=model,
-        base_url=BASE_URL,
-        api_key=API_KEY,
-        temperature=0.2,
-        use_responses_api=False,
-        http_client=httpx.Client(trust_env=False),
-        trace=trace,
-        status_cb=status_cb,
-        log_path=log_path,
-        max_steps=max_steps,
-    )
-
-# TODO 为什么需要包装器
-def run_agent(
-    goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
-    status_cb: Callable[[str, str], None] | None = None, log_path: str | Path | None = None,
-) -> AgentRunResult:
-    session = start_agent_session(goal, cwd=cwd, model=model, max_steps=max_steps, system_prompt=system_prompt, status_cb=status_cb, log_path=log_path)
-    return session.last_result or AgentRunResult("failed", session.session_id, session.thread_id, [], error="Agent session did not return a result.")
-
-
 def start_agent_session(
     goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
     status_cb: Callable[[str, str], None] | None = None, log_path: str | Path | None = None,
@@ -173,14 +104,15 @@ def start_agent_session(
     session.last_result = resume_agent_session(session, goal, status_cb=status_cb, start=True)
     return session
 
-# TODO 新建，恢复，唤醒等待 在这个函数中行为区别是什么
+
 def resume_agent_session(
     session: AgentSession, user_input: str, *, status_cb: Callable[[str, str], None] | None = None, start: bool = False,
 ) -> AgentRunResult:
     trace = RunTrace()
+    is_waiting_resume = bool(not start and session.resume_mode == "interrupt" and session.last_result and session.last_result.status == "waiting")
     phase = "run-start" if start else "resume-start"
     log_step(session.log_path, phase, f"session_id: {session.session_id}\nthread_id: {session.thread_id}\ninput: {user_input}\nmodel: {session.model}\nmax_steps: {session.max_steps}\ncwd: {session.cwd}")
-    chat = build_chat_model(trace=trace, status_cb=status_cb, log_path=session.log_path, model=session.model, max_steps=session.max_steps)
+    chat = build_chat_model(trace=trace, status_cb=status_cb, log_path=session.log_path, model=session.model, max_steps=session.max_steps, log_step=log_step, to_msg=_to_msg, dump_msg=_dump_msg, status_from_output=_status_from_output)
     agent = create_deep_agent(
         model=chat,
         system_prompt=session.system_prompt,
@@ -192,25 +124,35 @@ def resume_agent_session(
     )
     try:
         payload: Any = {"messages": [{"role": "user", "content": user_input}]}
-        if not start and session.last_result and session.last_result.status == "waiting":
-            payload = Command(resume=user_input)
+        if is_waiting_resume: payload = Command(resume=user_input)
         result = agent.invoke(payload, config={"configurable": {"thread_id": session.thread_id}, "recursion_limit": session.max_steps * 8 + 20})
     except Exception as e:
         trace.status, trace.error = "failed", str(e)
         log_step(session.log_path, "run-end", f"status: failed\nstep: {trace.step_count}\nmessage: {e}")
         session.last_result = AgentRunResult("failed", session.session_id, session.thread_id, trace.messages, trace.last_model_output, trace.last_action, trace.final_output, trace.step_count, str(e), trace.command_outputs)
         return session.last_result
-    if waiting := _waiting_from_result(result):
+    waiting = _waiting_from_result(result)
+    waiting_via_interrupt = bool(waiting)
+    if not waiting and trace.last_action.startswith("ask_input: "):
+        waiting = trace.last_action.removeprefix("ask_input: ").strip()
+    if waiting:
+        session.resume_mode = "interrupt" if waiting_via_interrupt else "message"
         trace.status, trace.final_output = "waiting", waiting
         log_step(session.log_path, "run-end", f"status: waiting\nstep: {trace.step_count}\nmessage: {waiting}")
         if status_cb:
             status_cb("waiting", waiting)
+    else:
+        session.resume_mode = "message"
     final = trace.final_output or _final_from_result(result)
     status = "max_steps_reached" if trace.max_steps_reached else trace.status
     session.last_result = AgentRunResult(status, session.session_id, session.thread_id, trace.messages, trace.last_model_output, trace.last_action, final, trace.step_count, trace.error, trace.command_outputs)
     return session.last_result
 
 
+
+# ---------------------------------------------------------------
+# 辅助函数
+# ---------------------------------------------------------------
 def _to_msg(msg: BaseMessage) -> dict[str, str] | None:
     if isinstance(msg, SystemMessage): return {"role": "system", "content": str(msg.content)}
     if isinstance(msg, HumanMessage): return {"role": "user", "content": str(msg.content)}
@@ -218,11 +160,11 @@ def _to_msg(msg: BaseMessage) -> dict[str, str] | None:
     if isinstance(msg, AIMessage): return {"role": "assistant", "content": str(msg.content or "")}
     return None
 
-# TODO:这个函数只用了一次，为什么要单独写出来
+
 def _dump_msg(msg: AIMessage) -> str:
     return json.dumps({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls}, ensure_ascii=False, indent=2)
 
-# TODO:这个函数只用了一次，为什么要单独写出来
+
 def _final_from_result(result: Any) -> str:
     if not isinstance(result, dict): return ""
     msgs = result.get("messages") or []
@@ -238,17 +180,25 @@ def _status_from_output(text: str) -> tuple[Literal["background", "completed"], 
 
 
 def _waiting_from_result(result: Any) -> str:
-    if not isinstance(result, dict):
-        return ""
+    if not isinstance(result, dict): return ""
     interrupts = result.get("__interrupt__") or []
-    if not interrupts:
-        return ""
+    if not interrupts: return ""
     value = getattr(interrupts[0], "value", interrupts[0])
-    if isinstance(value, dict):
-        return str(value.get("question", "") or "")
+    if isinstance(value, dict): return str(value.get("question", "") or "")
     return str(value or "")
 
-# TODO 函数含义？
+
+
+# ---------------------------------------------------------------
+# 下面是非正式代码，测试用
+# ---------------------------------------------------------------
+def run_agent(
+    goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
+    status_cb: Callable[[str, str], None] | None = None, log_path: str | Path | None = None,
+) -> AgentRunResult:
+    session = start_agent_session(goal, cwd=cwd, model=model, max_steps=max_steps, system_prompt=system_prompt, status_cb=status_cb, log_path=log_path)
+    return session.last_result or AgentRunResult("failed", session.session_id, session.thread_id, [], error="Agent session did not return a result.")
+
 def cli_main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     goal = " ".join(argv).strip() or "List the files in the current directory"
