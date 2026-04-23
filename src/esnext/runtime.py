@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import threading, time
+import json, threading, time, uuid
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 from .executor import ExecutionRuntime
-from .models import AgentRecord, ExecutionResult, ExecutionState, RuntimeTask
-
-STATE_TRANSITIONS: dict[ExecutionState, tuple[ExecutionState, ...]] = {
-    "running": ("waiting", "background", "completed", "failed", "cancelled"),
-    "waiting": ("running", "cancelled"),
-    "background": ("running", "cancelled"),
-    "completed": (),
-    "failed": (),
-    "cancelled": (),
-}
+from .minimal_agent import AgentSession, resume_agent_session, start_agent_session
+from .models import AgentRecord, ExecutionResult, RuntimeTask
 
 
 @dataclass(slots=True)
@@ -32,6 +25,16 @@ class RuntimeEnvelope:
     agent_id: str
     update: RuntimeUpdate
 
+SUPERVISOR_SYS = (
+    "You are the second-layer supervisor. Supervise one task and its worker agents. "
+    "Use the built-in workspace tools when you need to inspect files, outputs, logs, or edit working files. "
+    "Use the runtime tools to inspect task state, inspect worker state, start workers, and resume workers. "
+    "Prefer reusing existing workers before starting new ones. "
+    "When the overall task is complete, answer with 'TASK_COMPLETED: <summary>'. "
+    "When the task cannot continue, answer with 'TASK_FAILED: <summary>'. "
+    "Otherwise answer with 'TASK_CONTINUE: <summary>'."
+)
+
 
 class RuntimeSupervisor:
     """Middle layer that stores lightweight records for third-layer workers."""
@@ -39,51 +42,80 @@ class RuntimeSupervisor:
     def __init__(self, executor: ExecutionRuntime | None = None) -> None:
         self.executor = executor or ExecutionRuntime()
         self._agents: dict[str, AgentRecord] = {}
-        self._tasks: dict[str, dict[str, object]] = {}
+        self._task: dict[str, object] | None = None
+        self._workspace_root: Path | None = None
+        self._output_path: Path | None = None
+        self._supervisor: AgentSession | None = None
+        self._supervisor_busy = False
         self._waiters: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._queue: deque[RuntimeEnvelope] = deque()
+        self._supervisor_queue: deque[str] = deque()
         self._queue_ready = threading.Condition(self._lock)
         self._controller = threading.Thread(target=self._control_loop, daemon=True, name="runtime-controller")
         self._controller.start()
 
     def start(self, task: RuntimeTask) -> ExecutionResult:
+        with self._lock:
+            if self._task and self._task["task_id"] != task.task_id:
+                return ExecutionResult(task.task_id, "failed", "RuntimeSupervisor already manages another task.", task.output_path)
         agent_id = f"agent-{task.task_id}"
         with self._lock:
             self._agents[agent_id] = AgentRecord(agent_id, task.task_id, task.objective, "running", progress_text="Worker created.", output_path=task.output_path)
-            self._tasks[task.task_id] = {
+            self._task = {
                 "task_id": task.task_id,
                 "objective": task.objective,
                 "worker_ids": [agent_id],
                 "status": "running",
-                "summary": "Worker created.",
+                "summary": "",
             }
+            self._workspace_root = task.workspace_root
+            self._output_path = task.output_path
             self._waiters[agent_id] = threading.Event()
         self._push_update(agent_id, "running", "Worker created.")
-        threading.Thread(target=self._run, args=("start", agent_id, task), daemon=True, name=f"runtime-start-{agent_id}").start()
+        self._start_worker_thread("start", agent_id, task)
+        self._waiters[agent_id].wait()
+        return self._final_result(agent_id)
+
+    def start_worker(self, task_id: str, objective: str) -> ExecutionResult:
+        task = self.get_task(task_id)
+        if not task:
+            return ExecutionResult(task_id, "failed", f"Unknown task: {task_id}.", Path.cwd() / "agent-run.md")
+        worker_task_id = f"{task_id}-{uuid.uuid4().hex[:4]}"
+        base_output = self._output_path or (Path.cwd() / "agent-run.md")
+        output_path = base_output.with_name(f"{base_output.stem}-{worker_task_id}.md")
+        runtime_task = RuntimeTask(worker_task_id, "supervised", objective, output_path, self._workspace_root or Path.cwd(), objective, True)
+        agent_id = f"agent-{worker_task_id}"
+        with self._lock:
+            self._agents[agent_id] = AgentRecord(agent_id, worker_task_id, objective, "running", progress_text="Worker created.", output_path=output_path)
+            self._task["worker_ids"].append(agent_id)
+            self._waiters[agent_id] = threading.Event()
+        self._push_update(agent_id, "running", "Worker created.")
+        self._start_worker_thread("start", agent_id, runtime_task)
         self._waiters[agent_id].wait()
         return self._final_result(agent_id)
 
     def resume(self, agent_id: str, user_input: str) -> ExecutionResult:
         with self._lock:
             if agent_id not in self._agents:
-                return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", taskless_output())
+                return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
             self._waiters[agent_id] = threading.Event()
-        threading.Thread(target=self._run, args=("resume", agent_id, user_input), daemon=True, name=f"runtime-resume-{agent_id}").start()
+        self._start_worker_thread("resume", agent_id, user_input)
         self._waiters[agent_id].wait()
         return self._final_result(agent_id)
 
-    def get_agent(self, agent_id: str) -> AgentRecord | None:
-        return self._agents.get(agent_id)
-
-    def list_agents(self) -> list[AgentRecord]:
-        return list(self._agents.values())
-
     def get_task(self, task_id: str) -> dict[str, object] | None:
-        return self._tasks.get(task_id)
+        if not self._task or self._task["task_id"] != task_id:
+            return None
+        return {
+            "task_id": self._task["task_id"],
+            "objective": self._task["objective"],
+            "status": self._task["status"],
+            "summary": self._task["summary"],
+        }
 
-    def list_tasks(self) -> list[dict[str, object]]:
-        return list(self._tasks.values())
+    def _start_worker_thread(self, mode: str, agent_id: str, arg: RuntimeTask | str) -> None:
+        threading.Thread(target=self._run, args=(mode, agent_id, arg), daemon=True, name=f"runtime-{mode}-{agent_id}").start()
 
     def _run(self, mode: str, agent_id: str, arg: RuntimeTask | str) -> None:
         try:
@@ -100,7 +132,7 @@ class RuntimeSupervisor:
                 self._push_update(agent_id, "failed", str(e), result=ExecutionResult(task.task_id, "failed", str(e), task.output_path))
             else:
                 task_id = agent_id.removeprefix("agent-")
-                output = self._agents[agent_id].output_path or taskless_output()
+                output = self._agents[agent_id].output_path or (Path.cwd() / "agent-run.md")
                 self._push_update(agent_id, "failed", str(e), result=ExecutionResult(task_id, "failed", str(e), output))
 
     def _push_update(
@@ -113,56 +145,132 @@ class RuntimeSupervisor:
     def _control_loop(self) -> None:
         while True:
             with self._queue_ready:
-                while not self._queue:
+                while not self._queue and not (self._supervisor_queue and not self._supervisor_busy):
                     self._queue_ready.wait()
-                item = self._queue.popleft()
-            self._handle_update(item.agent_id, item.update)
-            time.sleep(0.2)
+                item = self._queue.popleft() if self._queue else None
+                supervisor = None if item or self._supervisor_busy or not self._supervisor_queue else self._supervisor_queue.popleft()
+            if item:
+                self._handle_update(item.agent_id, item.update)
+            elif supervisor:
+                with self._queue_ready:
+                    self._supervisor_busy = True
+                task_id = self._task["task_id"] if self._task else "supervisor"
+                threading.Thread(target=self._run_supervisor, args=(supervisor,), daemon=True, name=f"runtime-supervisor-{task_id}").start()
+            time.sleep(0.1)
 
     def _handle_update(self, agent_id: str, update: RuntimeUpdate) -> None:
         if agent_id not in self._agents:
             return
-        old_status = self._agents[agent_id].status
         self._update_agent(agent_id, update.status, update.text, update.result, update.thread_id)
-        self._handle_status_change(agent_id, old_status, update.status)
-        self._supervise_task(self._agents[agent_id].task_id)
+        parts = [f"Worker: {agent_id}", f"Status: {update.status}"]
+        if update.text:
+            parts.append(f"Text: {update.text}")
+        if update.result:
+            parts.append(f"Summary: {update.result.summary}")
+        with self._queue_ready:
+            self._supervisor_queue.append("\n".join(parts))
+            self._queue_ready.notify()
         if update.result and agent_id in self._waiters:
             self._waiters[agent_id].set()
 
-    def _handle_status_change(self, agent_id: str, old: str, new: str) -> None:
-        if old == new:
-            return
+    def _run_supervisor(self, text: str) -> None:
+        try:
+            task = self._task
+            if not task:
+                return
+            session = self._supervisor
+            if session is None:
+                session = start_agent_session(
+                    f"Task objective: {task['objective']}\nEvent: {text}",
+                    cwd=self._workspace_root or Path.cwd(),
+                    system_prompt=SUPERVISOR_SYS,
+                    log_path=(self._workspace_root or Path.cwd()) / f"supervisor-{task['task_id']}.log",
+                    tools=self._runtime_tools(),
+                )
+                self._supervisor = session
+                result = session.last_result
+            else:
+                result = resume_agent_session(session, text)
+            if result:
+                self._apply_supervisor_result(result.final_output or "")
+        finally:
+            with self._queue_ready:
+                self._supervisor_busy = False
+                self._queue_ready.notify()
 
-    def _supervise_task(self, task_id: str) -> None:
-        task = self._tasks.get(task_id)
+    def _runtime_tools(self) -> list[object]:
+        from langchain.tools import tool
+
+        def agent_dict(agent_id: str) -> dict[str, object]:
+            agent = self._agents.get(agent_id)
+            if not agent:
+                return {}
+            return {
+                "agent_id": agent.agent_id,
+                "task_id": agent.task_id,
+                "status": agent.status,
+                "resume_mode": agent.resume_mode,
+                "progress_text": agent.progress_text,
+                "pending_text": agent.pending_text,
+                "thread_id": agent.thread_id,
+            }
+
+        @tool("get_task")
+        def get_task_tool() -> str:
+            """Get current task state."""
+            if not self._task:
+                return json.dumps({}, ensure_ascii=False)
+            return json.dumps(self.get_task(str(self._task["task_id"])) or {}, ensure_ascii=False)
+
+        @tool("list_workers")
+        def list_workers_tool() -> str:
+            """List worker records for the current task."""
+            task = self._task or {}
+            workers = [agent_dict(agent_id) for agent_id in task.get("worker_ids", [])]
+            return json.dumps(workers, ensure_ascii=False)
+
+        @tool("get_worker")
+        def get_worker_tool(agent_id: str) -> str:
+            """Get one worker record by agent id."""
+            return json.dumps(agent_dict(agent_id), ensure_ascii=False)
+
+        @tool("resume_worker")
+        def resume_worker_tool(agent_id: str, text: str) -> str:
+            """Resume a worker agent with new input."""
+            result = self.resume(agent_id, text)
+            return json.dumps({"status": result.status, "summary": result.summary}, ensure_ascii=False)
+
+        @tool("start_worker")
+        def start_worker_tool(objective: str) -> str:
+            """Start a new worker under the current task."""
+            if not self._task:
+                return json.dumps({"status": "failed", "summary": "No active task."}, ensure_ascii=False)
+            task_id = str(self._task["task_id"])
+            result = self.start_worker(task_id, objective)
+            return json.dumps({"status": result.status, "summary": result.summary, "task_id": result.task_id}, ensure_ascii=False)
+
+        return [get_task_tool, list_workers_tool, get_worker_tool, resume_worker_tool, start_worker_tool]
+
+    def _apply_supervisor_result(self, text: str) -> None:
+        task = self._task
         if not task:
             return
-        workers = [self._agents[agent_id] for agent_id in task["worker_ids"] if agent_id in self._agents]
-        if not workers:
-            task["status"], task["summary"] = "failed", "No active workers."
-            return
-        if any(worker.status == "completed" for worker in workers):
-            worker = next(worker for worker in workers if worker.status == "completed")
+        raw = text.strip()
+        if raw.upper().startswith("TASK_COMPLETED:"):
             task["status"] = "completed"
-            task["summary"] = worker.result.summary if worker.result else worker.progress_text
+            task["summary"] = raw[len("TASK_COMPLETED:"):].strip()
             return
-        if any(worker.status == "running" for worker in workers):
-            worker = next(worker for worker in workers if worker.status == "running")
-            task["status"], task["summary"] = "running", worker.progress_text
+        if raw.upper().startswith("TASK_FAILED:"):
+            task["status"] = "failed"
+            task["summary"] = raw[len("TASK_FAILED:"):].strip()
             return
-        if any(worker.status == "waiting" for worker in workers):
-            worker = next(worker for worker in workers if worker.status == "waiting")
-            task["status"], task["summary"] = "waiting", worker.pending_text or worker.progress_text
+        if raw.upper().startswith("TASK_CONTINUE:"):
+            if task["status"] in {"completed", "failed", "cancelled"}:
+                return
+            task["summary"] = raw[len("TASK_CONTINUE:"):].strip()
             return
-        if any(worker.status == "background" for worker in workers):
-            worker = next(worker for worker in workers if worker.status == "background")
-            task["status"], task["summary"] = "background", worker.pending_text or worker.progress_text
-            return
-        if all(worker.status == "cancelled" for worker in workers):
-            task["status"], task["summary"] = "cancelled", "All workers cancelled."
-            return
-        task["status"] = "failed"
-        task["summary"] = next((worker.progress_text for worker in workers if worker.progress_text), "All workers failed.")
+        if raw and task["status"] not in {"completed", "failed", "cancelled"}:
+            task["summary"] = raw
 
     def _update_agent(
         self, agent_id: str, status: str, progress_text: str = "", result: ExecutionResult | None = None,
@@ -180,11 +288,6 @@ class RuntimeSupervisor:
 
     def _final_result(self, agent_id: str) -> ExecutionResult:
         record = self._agents[agent_id]
-        result = record.result or ExecutionResult(record.task_id, record.status, record.progress_text or "No result.", record.output_path or taskless_output())
+        result = record.result or ExecutionResult(record.task_id, record.status, record.progress_text or "No result.", record.output_path or (Path.cwd() / "agent-run.md"))
         result.notes.extend([f"Agent ID: {agent_id}", f"Final status: {result.status}"])
         return result
-
-
-def taskless_output():
-    from pathlib import Path
-    return Path.cwd() / "agent-run.md"

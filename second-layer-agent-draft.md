@@ -26,7 +26,17 @@ The second-layer agent should inherit:
 - deepagent session/runtime
 - thread/checkpointer mechanism
 - waiting/background semantics
-- basic bash capability
+- the built-in deepagents workspace tools:
+  - `execute`
+  - `read_file`
+  - `write_file`
+  - `edit_file`
+  - `grep`
+  - `glob`
+  - `ls`
+  - `write_todos`
+  - `read_todos`
+  - `task`
 
 Only change:
 
@@ -49,7 +59,7 @@ Only change:
 ### Third-Layer Agent
 
 - executes concrete work
-- uses bash/tools
+- uses the built-in workspace tools
 - produces artifacts and status updates
 
 ## Why Reuse the Third-Layer Runtime
@@ -60,7 +70,7 @@ The third layer already has:
 - start/resume
 - waiting via interrupt
 - background via persistent session
-- bash capability
+- the built-in workspace tools
 
 So the second-layer agent does not need a new runtime.
 
@@ -88,26 +98,27 @@ This keeps the interface simple:
 
 ### Inherited From Third Layer
 
-The second-layer agent may keep the basic bash capability.
+The second-layer agent inherits the same built-in workspace tools used by the third-layer workers.
 
 This is useful for:
 
 - reading worker output files
 - reading logs
 - inspecting workspace files
+- editing files when supervision requires it
 
 ### Exposed Runtime Control Functions
 
-The second-layer agent should be given access to existing `RuntimeSupervisor` functions instead of a new action system.
+The second-layer agent should be given access to existing `RuntimeSupervisor` functions through deepagents tools instead of a new action system.
 
 Minimal exposed functions:
 
-- `get_task(task_id)`
+- `get_task()`
 - `list_tasks()`
-- `get_agent(agent_id)`
-- `list_agents()`
-- `start(task)`
-- `resume(agent_id, text)`
+- `list_workers()`
+- `get_worker(agent_id)`
+- `start_worker(objective)`
+- `resume_worker(agent_id, text)`
 
 If later needed:
 
@@ -137,7 +148,7 @@ So the flow becomes:
 5. if the supervisor agent is idle, the controller pops one event and forwards it
 6. if the supervisor agent is busy, events remain queued
 7. supervisor agent queries status if needed
-8. supervisor agent calls `resume(...)`, `start(...)`, or does nothing
+8. supervisor agent calls `resume_worker(...)`, `start_worker(...)`, or does nothing
 
 ## Prompt Direction
 
@@ -146,7 +157,7 @@ The supervisor agent prompt should emphasize:
 - you are a supervisor, not the main executor
 - prefer reusing existing workers before starting new ones
 - inspect state before making decisions
-- inspect artifacts/logs/files when needed
+- inspect artifacts/logs/files when needed with the built-in workspace tools
 - only declare completion when the overall task objective is satisfied
 
 ## Minimal First Version
@@ -156,7 +167,7 @@ The first supervisor-agent version should stay small.
 It only needs to support:
 
 - reading task and worker state
-- reading artifacts/logs/files with bash
+- reading artifacts/logs/files with the built-in workspace tools
 - resuming a worker
 - starting a new worker if needed
 - deciding whether the task is complete
@@ -168,6 +179,33 @@ It does not need:
 - its own storage system
 - a new runtime implementation
 
+## Worker Status Flow
+
+Worker status values remain in code, but the transition relationship is documented here instead of hard-coded as a separate table.
+
+Current expected flow:
+
+- `running -> waiting`
+- `running -> background`
+- `running -> completed`
+- `running -> failed`
+- `running -> cancelled`
+- `waiting -> running`
+- `waiting -> cancelled`
+- `background -> running`
+- `background -> cancelled`
+
+Terminal worker states:
+
+- `completed`
+- `failed`
+- `cancelled`
+
+The second layer uses these statuses for supervision and resume behavior:
+
+- `waiting` resumes through interrupt resume
+- `background` resumes through normal message resume
+
 ## Summary
 
 The second-layer agent should reuse the third-layer deepagent runtime and keep the architecture simple.
@@ -176,8 +214,8 @@ The design is:
 
 - same agent runtime foundation as the third layer
 - different supervisor prompt
-- inherited bash capability
-- additional access to `RuntimeSupervisor` query/control functions
+- inherited built-in workspace tools
+- additional access to `RuntimeSupervisor` query/control tools
 - event-driven invocation by the second-layer controller
 
 This makes the second-layer agent a supervisor over third-layer workers, without introducing a second independent agent framework.

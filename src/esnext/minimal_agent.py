@@ -17,7 +17,8 @@ from .model_config import MODEL, build_chat_model
 
 ENV = {"PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1"}
 SYS = (
-    "Use tools when needed. Use execute for shell commands. "
+    "Use the built-in workspace tools when needed: execute, read_file, write_file, edit_file, grep, glob, ls, "
+    "write_todos, read_todos, and task. "
     "If you need upper-layer input, call the ask_input tool with a concise question. "
     "If a long-running job should continue later, answer with 'BACKGROUND: <status>'. "
     "Otherwise answer directly when the task is done."
@@ -69,6 +70,7 @@ class AgentSession:
     max_steps: int
     system_prompt: str
     checkpointer: MemorySaver
+    tools: list[Any] = field(default_factory=list)
     resume_mode: Literal["message", "interrupt"] = "message"
     last_result: AgentRunResult | None = None
 
@@ -82,25 +84,59 @@ def log_step(path: Path | None, title: str, body: str = "") -> None:
         f.write("\n")
 
 
-class LoggingShellBackend(LocalShellBackend):
+class LoggingWorkspaceBackend(LocalShellBackend):
     def __init__(self, *, trace: RunTrace, log_path: Path, root_dir: Path, timeout: int = 30) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True, timeout=timeout, env=ENV, inherit_env=False)
         self.trace, self.log_path = trace, log_path
 
+    def _log_backend_output(self, name: str, output: Any) -> None:
+        body = output if isinstance(output, str) else str(output)
+        self.trace.command_outputs.append(f"[{name}]\n{body}")
+        log_step(self.log_path, f"step-{self.trace.step_count}-{name}-output", body)
+
+    def ls(self, path: str):
+        result = super().ls(path)
+        self._log_backend_output("ls", result)
+        return result
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000):
+        result = super().read(file_path, offset=offset, limit=limit)
+        self._log_backend_output("read_file", result)
+        return result
+
+    def write(self, file_path: str, content: str):
+        result = super().write(file_path, content)
+        self._log_backend_output("write_file", result)
+        return result
+
+    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False):
+        result = super().edit(file_path, old_string, new_string, replace_all=replace_all)
+        self._log_backend_output("edit_file", result)
+        return result
+
+    def glob(self, pattern: str, path: str = "/"):
+        result = super().glob(pattern, path=path)
+        self._log_backend_output("glob", result)
+        return result
+
+    def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        result = super().grep(pattern, path=path, glob=glob)
+        self._log_backend_output("grep", result)
+        return result
+
     def execute(self, command: str, *, timeout: int | None = None):
         result = super().execute(command, timeout=timeout)
-        self.trace.command_outputs.append(result.output)
-        log_step(self.log_path, f"step-{self.trace.step_count}-command-output", result.output)
+        self._log_backend_output("execute", result.output)
         return result
 
 
 def start_agent_session(
     goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
-    status_cb: Callable[[str, str], None] | None = None, log_path: str | Path | None = None,
+    status_cb: Callable[[str, str], None] | None = None, log_path: str | Path | None = None, tools: list[Any] | None = None,
 ) -> AgentSession:
     wd = Path(cwd).resolve() if cwd else Path.cwd()
     lp = Path(log_path).resolve() if log_path else (wd / "agent-debug.log")
-    session = AgentSession(uuid.uuid4().hex[:8], uuid.uuid4().hex[:8], wd, lp, model, max_steps, system_prompt, MemorySaver())
+    session = AgentSession(uuid.uuid4().hex[:8], uuid.uuid4().hex[:8], wd, lp, model, max_steps, system_prompt, MemorySaver(), list(tools or []))
     session.last_result = resume_agent_session(session, goal, status_cb=status_cb, start=True)
     return session
 
@@ -116,8 +152,8 @@ def resume_agent_session(
     agent = create_deep_agent(
         model=chat,
         system_prompt=session.system_prompt,
-        tools=[ask_input],
-        backend=LoggingShellBackend(trace=trace, log_path=session.log_path, root_dir=session.cwd),
+        tools=[ask_input, *session.tools],
+        backend=LoggingWorkspaceBackend(trace=trace, log_path=session.log_path, root_dir=session.cwd),
         subagents=[],
         middleware=(),
         checkpointer=session.checkpointer,
