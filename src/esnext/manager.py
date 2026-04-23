@@ -19,13 +19,17 @@ class StageManager:
     def handle(self, request: StageRequest) -> ExecutionResult:
         # TODO: 后期maanager是一个LangGraph状态, 如果外部请求是 询问状态或结果，则不会新建 task(非agent请求)
         task = self._build_runtime_task(request)
-        return self.runtime_supervisor.run(task)
+        return self.runtime_supervisor.start(task)
 
     def _build_runtime_task(self, request: StageRequest) -> RuntimeTask:
         # 一个 runttime 负责单个任务, 譬如跑代码 / 寻找灵感 / 完成论文某个部分 
         task_id = uuid4().hex[:8]
         workspace_root = request.workspace_root.resolve()
-        output_path = self._build_output_path(request, workspace_root)
+        if request.output_path:
+            out = Path(request.output_path)
+            output_path = out if out.is_absolute() else (workspace_root / out)
+        else:
+            output_path = workspace_root / ("agent-run.md" if request.use_agent else "result.md")
         return RuntimeTask(
             task_id=task_id,
             stage_name="stage-2-three-layer-skeleton",
@@ -35,12 +39,6 @@ class StageManager:
             objective=request.target,
             use_agent=request.use_agent,
         )
-
-    def _build_output_path(self, request: StageRequest, workspace_root: Path) -> Path:
-        if request.output_path:
-            out = Path(request.output_path)
-            return out if out.is_absolute() else (workspace_root / out)
-        return workspace_root / ("agent-run.md" if request.use_agent else "result.md")
 
 
 # Backward-compatible alias for the earlier two-layer skeleton.

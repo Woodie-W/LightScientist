@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 ExecutionState = Literal["running", "waiting", "background", "completed", "failed", "cancelled"]
+ResumeMode = Literal["message", "interrupt"]
 
 
 @dataclass(slots=True)
@@ -53,7 +54,9 @@ class AgentRecord:
     objective: str
     status: ExecutionState
     thread_id: str = ""
+    resume_mode: ResumeMode = "message"
     progress_text: str = ""
+    pending_text: str = ""
     output_path: Path | None = None
     result: ExecutionResult | None = None
 

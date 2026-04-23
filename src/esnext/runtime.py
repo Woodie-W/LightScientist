@@ -13,9 +13,6 @@ class RuntimeSupervisor:
         self.executor = executor or ExecutionRuntime()
         self._agents: dict[str, AgentRecord] = {}
 
-    def run(self, task: RuntimeTask) -> ExecutionResult:
-        return self.start(task)
-
     def start(self, task: RuntimeTask) -> ExecutionResult:
         agent_id = f"agent-{task.task_id}"
         record = AgentRecord(agent_id, task.task_id, task.objective, "running", progress_text="Worker created.", output_path=task.output_path)
@@ -46,6 +43,8 @@ class RuntimeSupervisor:
     ) -> None:
         record = self._agents[agent_id]
         record.status = status
+        record.resume_mode = "interrupt" if status == "waiting" else "message"
         record.progress_text = progress_text
+        record.pending_text = progress_text if status in {"waiting", "background"} else ""
         if result:
             record.result = result
