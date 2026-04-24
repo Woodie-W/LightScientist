@@ -36,6 +36,27 @@ class ExecutionRuntime:
         r = resume_agent_session(handle.session, user_input, status_cb=status_cb)
         return self._write_result(handle.task_id, handle.stage_name, handle.output_path, handle.session.log_path, r, status_cb)
 
+    def cancel(self, agent_id: str, status_cb: StatusCallback | None = None) -> ExecutionResult:
+        handle = self._agents.pop(agent_id, None)
+        if not handle:
+            return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
+        self._emit(status_cb, "running", "Cancelling persistent agent session.")
+        message = (
+            "The upper layer cancelled this worker. Stop normal task progress now. "
+            "Inspect current workspace files if needed, preserve deliverables, write or update delivery "
+            "documentation when useful, summarize completed work, unfinished work, preserved artifact paths, "
+            "and next steps, then call finish_cancelled(summary)."
+        )
+        try:
+            r = resume_agent_session(handle.session, message, status_cb=status_cb)
+        except Exception as e:
+            r = AgentRunResult("cancelled", handle.session.info.snapshot(), [], final_output=f"Worker cancelled. Finalization failed: {e}", error=str(e))
+        if r.status != "cancelled":
+            r.status = "cancelled"  # type: ignore[assignment]
+            if not r.final_output:
+                r.final_output = "Worker cancelled before producing a cancellation summary."
+        return self._write_result(handle.task_id, handle.stage_name, handle.output_path, handle.session.log_path, r, status_cb)
+
     def get_session(self, agent_id: str) -> AgentSession | None:
         handle = self._agents.get(agent_id)
         return handle.session if handle else None
@@ -78,7 +99,7 @@ class ExecutionRuntime:
             text += ["", "## Error", "", r.error]
         output_path.write_text("\n".join(text) + "\n", encoding="utf-8")
         self._emit(status_cb, status, f"Minimal agent finished after {r.step_count} steps.")
-        summary = r.final_output if status in {"waiting", "background"} and r.final_output else f"Minimal agent run finished with status {status}."
+        summary = r.final_output if status in {"waiting", "background", "cancelled"} and r.final_output else f"Minimal agent run finished with status {status}."
         return ExecutionResult(task_id, status, summary, output_path, artifacts=[output_path, log_path], notes=notes)
 
     def _agent_status(self, status: str) -> str:

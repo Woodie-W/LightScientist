@@ -172,3 +172,21 @@ def suspend_background(note: str) -> str:
         The background status note.
     """
     return note
+
+
+@tool(parse_docstring=True)
+def finish_cancelled(summary: str) -> str:
+    """Finish cancellation after preserving the worker's current deliverables.
+
+    Use this only after the upper layer asks this worker to cancel. Before
+    calling it, inspect the workspace if needed, write or update delivery
+    documentation when useful, and make sure the summary explains completed
+    work, unfinished work, preserved artifact paths, and useful next steps.
+
+    Args:
+        summary: Concise cancellation handoff summary for the upper layers.
+
+    Returns:
+        The cancellation handoff summary.
+    """
+    return summary

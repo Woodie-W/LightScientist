@@ -158,7 +158,7 @@ class AgentRecord:
         return self.progress_text if self.status in {"waiting", "background"} else ""
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data: dict[str, object] = {
             "agent_id": self.agent_id,
             "task_id": self.task_id,
             "objective": self.objective,
@@ -172,6 +172,14 @@ class AgentRecord:
             "workspace_root": str(self.workspace_root) if self.workspace_root else "",
             "output_path": str(self.output_path) if self.output_path else "",
         }
+        if self.result:
+            data["result"] = {
+                "status": self.result.status,
+                "summary": self.result.summary,
+                "output_path": str(self.result.output_path),
+                "artifacts": [str(path) for path in self.result.artifacts],
+            }
+        return data
 
 
 # ---------------------------------------------------------------
@@ -239,7 +247,7 @@ class RunTrace(HasAgentSessionInfo, HasAgentProgress):
     """Mutable trace collected during one start/resume cycle."""
 
     info: AgentSessionInfo
-    status: Literal["running", "waiting", "background", "completed", "failed"] = "running"
+    status: Literal["running", "waiting", "background", "completed", "failed", "cancelled"] = "running"
     progress: AgentProgress = field(default_factory=AgentProgress)
     last_model_output: str = ""
     last_action: str = ""

@@ -10,7 +10,7 @@ from langgraph.types import Command
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from .backends import LoggingWorkspaceBackend, ask_input, log_step, suspend_background
+from .backends import LoggingWorkspaceBackend, ask_input, finish_cancelled, log_step, suspend_background
 from .data_models import AgentRunResult, AgentSession, AgentSessionInfo, RunTrace, RuntimeUpdate
 from .model_config import MODEL, build_chat_model
 from .prompts import load_prompt
@@ -41,7 +41,7 @@ def resume_agent_session(
     agent = create_deep_agent(
         model=chat,
         system_prompt=session.system_prompt,
-        tools=[ask_input, suspend_background, *session.tools],
+        tools=[ask_input, suspend_background, finish_cancelled, *session.tools],
         backend=LoggingWorkspaceBackend(trace=trace, log_path=session.log_path, root_dir=session.cwd),
         subagents=[],
         middleware=(),
@@ -73,6 +73,13 @@ def resume_agent_session(
         log_step(session.log_path, "run-end", f"status: background\nstep: {trace.step_count}\nmessage: {note}")
         if status_cb:
             status_cb(RuntimeUpdate("background", note, trace.progress.snapshot()))
+    elif trace.last_action.startswith("finish_cancelled: "):
+        summary = trace.last_action.removeprefix("finish_cancelled: ").strip()
+        session.resume_mode = "message"
+        trace.status, trace.final_output = "cancelled", summary
+        log_step(session.log_path, "run-end", f"status: cancelled\nstep: {trace.step_count}\nmessage: {summary}")
+        if status_cb:
+            status_cb(RuntimeUpdate("cancelled", summary, trace.progress.snapshot()))
     else:
         session.resume_mode = "message"
     final = trace.final_output or _final_from_result(result)

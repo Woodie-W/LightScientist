@@ -66,6 +66,10 @@ class ScriptedChatModel(BaseChatModel):
                 trace.last_action = f"suspend_background: {arg}"
                 log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
                 return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "suspend_background", "args": {"note": arg}, "id": f"call_{step}", "type": "tool_call"}]))])
+            if name == "finish_cancelled":
+                trace.last_action = f"finish_cancelled: {arg}"
+                log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "finish_cancelled", "args": {"summary": arg}, "id": f"call_{step}", "type": "tool_call"}]))])
             cmd = spec if not sep else arg
             trace.last_action = f"execute: {cmd}"
             log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
@@ -333,7 +337,7 @@ def test_runtime_supervisor_can_run_supervisor_agent(tmp_path: Path, monkeypatch
 
 
 def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> None:
-    patch_scripted_model(monkeypatch, "tool: suspend_background|实验已启动。", "", scope_root=tmp_path)
+    patch_scripted_model(monkeypatch, "tool: suspend_background|实验已启动。", "", "tool: finish_cancelled|已整理取消交付。", "", scope_root=tmp_path)
     supervisor = RuntimeSupervisor()
     supervisor.start(
         RuntimeTask("taskcancelw", "interactive", "Run experiment", tmp_path / "agent.md", tmp_path, "Run experiment", True)
@@ -341,7 +345,12 @@ def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> No
     agent = next(iter(supervisor._agents.values()))
     cancelled = supervisor.cancel_worker(agent.agent_id)
     assert cancelled.status == "cancelled"
+    assert cancelled.summary == "已整理取消交付。"
+    assert cancelled.output_path.exists()
+    assert supervisor._results[agent.agent_id] is cancelled
     assert supervisor._agents[agent.agent_id].status == "cancelled"
+    assert supervisor._agents[agent.agent_id].result is cancelled
+    assert supervisor.executor.get_session(agent.agent_id) is None
     resumed = supervisor.resume(agent.agent_id, "继续")
     assert resumed.status == "cancelled"
 
