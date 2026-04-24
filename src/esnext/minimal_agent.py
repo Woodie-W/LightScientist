@@ -18,28 +18,34 @@ from .model_config import MODEL, build_chat_model
 SYS = (
     "Use the built-in workspace tools when needed: execute, read_file, write_file, edit_file, grep, glob, ls, "
     "write_todos, read_todos, and task. "
-    "If you need upper-layer input, call the ask_input tool with a concise question. "
-    "If a long-running job should continue later, answer with 'BACKGROUND: <status>'. "
-    "Otherwise answer directly when the task is done."
+    "Only call ask_input when the task cannot continue without a specific external answer that is not available from the workspace or tools. "
+    "Keep the ask_input question short and concrete. "
+    "Only answer with 'BACKGROUND: <status>' after you have already started or handed off work that must continue later, and the next useful step depends on a future external result. "
+    "Do not use BACKGROUND for normal ongoing work that you can continue right now. "
+    "If the task is complete, answer directly with the final result."
 )
 
 
 @dataclass(slots=True)
 class AgentRunResult:
+    """Final result for one start/resume cycle of a third-layer session."""
+
     status: Literal["completed", "failed", "max_steps_reached", "running", "waiting", "background", "cancelled"]
     session_id: str
     thread_id: str
     messages: list[dict[str, str]]
-    last_model_output: str = ""
-    last_action: str = "" # TODO lastaction 含义，和command_outputs的区别
-    final_output: str = ""
+    last_model_output: str = ""  # Raw last assistant output before result normalization.
+    last_action: str = ""  # Normalized last tool/action summary, such as execute or ask_input.
+    final_output: str = ""  # User-facing final text, waiting question, or background note.
     step_count: int = 0
     error: str = ""
-    command_outputs: list[str] = field(default_factory=list)
+    command_outputs: list[str] = field(default_factory=list)  # Logged workspace-tool outputs.
 
 
 @dataclass(slots=True)
 class RunTrace:
+    """Mutable trace collected during one start/resume cycle."""
+
     status: Literal["running", "waiting", "background", "completed", "failed"] = "running"
     step_count: int = 0
     last_model_output: str = ""

@@ -28,8 +28,13 @@ class RuntimeEnvelope:
 SUPERVISOR_SYS = (
     "You are the second-layer supervisor. Supervise one task and its worker agents. "
     "Use the built-in workspace tools when you need to inspect files, outputs, logs, or edit working files. "
-    "Use the runtime tools to inspect task state, inspect worker state, start workers, and resume workers. "
+    "Use the runtime tools to inspect task state, inspect worker state, start workers, resume workers, and cancel workers when needed. "
     "Prefer reusing existing workers before starting new ones. "
+    "On each new event, first inspect the current task and worker states before making a decision. "
+    "Do not start a new worker if an existing worker can be resumed to make progress. "
+    "Use start_worker only when no existing worker is suitable, or when deliberate parallel exploration is clearly useful. "
+    "Use cancel_worker only when a worker is no longer useful for the task. "
+    "Reply with exactly one line starting with TASK_COMPLETED:, TASK_FAILED:, or TASK_CONTINUE:. "
     "When the overall task is complete, answer with 'TASK_COMPLETED: <summary>'. "
     "When the task cannot continue, answer with 'TASK_FAILED: <summary>'. "
     "Otherwise answer with 'TASK_CONTINUE: <summary>'."
@@ -81,6 +86,8 @@ class RuntimeSupervisor:
         task = self.get_task(task_id)
         if not task:
             return ExecutionResult(task_id, "failed", f"Unknown task: {task_id}.", Path.cwd() / "agent-run.md")
+        if task["status"] in {"completed", "failed", "cancelled"}:
+            return ExecutionResult(task_id, "failed", f"Cannot start worker for {task['status']} task.", Path.cwd() / "agent-run.md")
         worker_task_id = f"{task_id}-{uuid.uuid4().hex[:4]}"
         base_output = self._output_path or (Path.cwd() / "agent-run.md")
         output_path = base_output.with_name(f"{base_output.stem}-{worker_task_id}.md")
@@ -99,10 +106,28 @@ class RuntimeSupervisor:
         with self._lock:
             if agent_id not in self._agents:
                 return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
+            record = self._agents[agent_id]
+            if record.status == "cancelled":
+                return record.result or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
             self._waiters[agent_id] = threading.Event()
         self._start_worker_thread("resume", agent_id, user_input)
         self._waiters[agent_id].wait()
         return self._final_result(agent_id)
+
+    def cancel_worker(self, agent_id: str) -> ExecutionResult:
+        with self._lock:
+            record = self._agents.get(agent_id)
+            if not record:
+                return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
+            if record.status == "cancelled":
+                return record.result or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
+            result = ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
+            self._update_agent(agent_id, "cancelled", "Worker cancelled.", result)
+            if agent_id in self._waiters:
+                self._waiters[agent_id].set()
+            self._supervisor_queue.append(f"Worker: {agent_id}\nStatus: cancelled\nText: Worker cancelled.\nSummary: Worker cancelled.")
+            self._queue_ready.notify()
+            return result
 
     def get_task(self, task_id: str) -> dict[str, object] | None:
         if not self._task or self._task["task_id"] != task_id:
@@ -161,15 +186,22 @@ class RuntimeSupervisor:
     def _handle_update(self, agent_id: str, update: RuntimeUpdate) -> None:
         if agent_id not in self._agents:
             return
+        old_status = self._agents[agent_id].status
+        if old_status == "cancelled" and update.status != "cancelled":
+            if update.result and agent_id in self._waiters:
+                self._waiters[agent_id].set()
+            return
         self._update_agent(agent_id, update.status, update.text, update.result, update.thread_id)
+        should_notify_supervisor = old_status != update.status or update.result is not None
         parts = [f"Worker: {agent_id}", f"Status: {update.status}"]
         if update.text:
             parts.append(f"Text: {update.text}")
         if update.result:
             parts.append(f"Summary: {update.result.summary}")
-        with self._queue_ready:
-            self._supervisor_queue.append("\n".join(parts))
-            self._queue_ready.notify()
+        if should_notify_supervisor:
+            with self._queue_ready:
+                self._supervisor_queue.append("\n".join(parts))
+                self._queue_ready.notify()
         if update.result and agent_id in self._waiters:
             self._waiters[agent_id].set()
 
@@ -249,7 +281,13 @@ class RuntimeSupervisor:
             result = self.start_worker(task_id, objective)
             return json.dumps({"status": result.status, "summary": result.summary, "task_id": result.task_id}, ensure_ascii=False)
 
-        return [get_task_tool, list_workers_tool, get_worker_tool, resume_worker_tool, start_worker_tool]
+        @tool("cancel_worker")
+        def cancel_worker_tool(agent_id: str) -> str:
+            """Cancel one worker by agent id."""
+            result = self.cancel_worker(agent_id)
+            return json.dumps({"status": result.status, "summary": result.summary}, ensure_ascii=False)
+
+        return [get_task_tool, list_workers_tool, get_worker_tool, resume_worker_tool, start_worker_tool, cancel_worker_tool]
 
     def _apply_supervisor_result(self, text: str) -> None:
         task = self._task

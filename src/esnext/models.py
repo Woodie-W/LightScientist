@@ -55,10 +55,10 @@ class AgentRecord:
     status: ExecutionState
     thread_id: str = ""
     resume_mode: ResumeMode = "message"
-    progress_text: str = ""
-    pending_text: str = ""
+    progress_text: str = ""  # Latest status text from the worker.
+    pending_text: str = ""  # Waiting question or background note when the worker is suspended.
     output_path: Path | None = None
-    result: ExecutionResult | None = None
+    result: ExecutionResult | None = None  # Final execution result once a worker round finishes.
 
 
 # Backward-compatible aliases from the earlier two-layer skeleton.

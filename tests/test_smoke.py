@@ -13,7 +13,7 @@ from esnext.cli import main, repl
 from esnext.manager import StageManager
 from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
 from esnext.models import RuntimeTask, StageRequest
-from esnext.runtime import RuntimeSupervisor
+from esnext.runtime import RuntimeSupervisor, RuntimeUpdate
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -316,3 +316,27 @@ def test_runtime_supervisor_can_run_supervisor_agent(tmp_path: Path, monkeypatch
     assert task is not None
     assert task["status"] == "completed"
     assert task["summary"] == "Supervisor marked the task done."
+
+
+def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(monkeypatch, "answer: BACKGROUND: 实验已启动。", scope_root=tmp_path)
+    supervisor = RuntimeSupervisor()
+    supervisor.start(
+        RuntimeTask("taskcancelw", "interactive", "Run experiment", tmp_path / "agent.md", tmp_path, "Run experiment", True)
+    )
+    agent = next(iter(supervisor._agents.values()))
+    cancelled = supervisor.cancel_worker(agent.agent_id)
+    assert cancelled.status == "cancelled"
+    assert supervisor._agents[agent.agent_id].status == "cancelled"
+    resumed = supervisor.resume(agent.agent_id, "继续")
+    assert resumed.status == "cancelled"
+
+
+def test_runtime_supervisor_does_not_forward_running_progress(tmp_path: Path) -> None:
+    from esnext.models import AgentRecord
+
+    supervisor = RuntimeSupervisor()
+    agent_id = "agent-progress"
+    supervisor._agents[agent_id] = AgentRecord(agent_id, "progress", "objective", "running")
+    supervisor._handle_update(agent_id, RuntimeUpdate("running", "Step 1"))
+    assert not supervisor._supervisor_queue

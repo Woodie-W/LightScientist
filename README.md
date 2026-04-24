@@ -43,6 +43,27 @@
   - 后续恢复走同一个 `thread_id` 的普通消息继续
   - 第二层记录的 `resume_mode` 是 `message`
 
+worker prompt 约束：
+
+- 只有在缺少明确的外部信息、并且无法通过 workspace/tools 自己获取时，才使用 `ask_input`
+- `ask_input` 的问题应简短且具体
+- 只有在已经启动了一个需要未来外部结果的工作时，才使用 `BACKGROUND: ...`
+- 正常还能继续推进的工作，不要用 `BACKGROUND`
+
+## 结果字段语义
+
+第三层一次 `start/resume` 周期里，关键结果字段含义如下：
+
+- `last_model_output`
+  - 模型最后一次原始输出
+- `last_action`
+  - 最后一次归一化动作摘要，例如 `execute: ...` 或 `ask_input: ...`
+- `final_output`
+  - 这一轮真正交付给上层的主文本
+  - 可能是最终答案，也可能是 waiting 问题或 background 说明
+- `command_outputs`
+  - 这一轮 workspace tools 的输出日志片段
+
 当前设计是纯内存版：
 
 - 第三层 session 不落磁盘

@@ -114,7 +114,6 @@ The second-layer agent should be given access to existing `RuntimeSupervisor` fu
 Minimal exposed functions:
 
 - `get_task()`
-- `list_tasks()`
 - `list_workers()`
 - `get_worker(agent_id)`
 - `start_worker(objective)`
@@ -155,10 +154,14 @@ So the flow becomes:
 The supervisor agent prompt should emphasize:
 
 - you are a supervisor, not the main executor
+- on each event, inspect current task/worker state first
 - prefer reusing existing workers before starting new ones
+- only start a new worker when no existing worker is suitable, or parallel exploration is clearly useful
+- only cancel a worker when it is no longer useful
 - inspect state before making decisions
 - inspect artifacts/logs/files when needed with the built-in workspace tools
 - only declare completion when the overall task objective is satisfied
+- answer with exactly one line starting with `TASK_COMPLETED:`, `TASK_FAILED:`, or `TASK_CONTINUE:`
 
 ## Minimal First Version
 
@@ -205,6 +208,13 @@ The second layer uses these statuses for supervision and resume behavior:
 
 - `waiting` resumes through interrupt resume
 - `background` resumes through normal message resume
+
+Worker prompt constraints:
+
+- use `ask_input` only when progress truly depends on missing external input
+- keep `ask_input` questions short and concrete
+- use `BACKGROUND: ...` only after work has already been launched and the next useful step depends on a future external result
+- do not use `BACKGROUND` for ordinary work that can continue immediately
 
 ## Summary
 
