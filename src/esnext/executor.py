@@ -2,22 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .minimal_agent import AgentRunResult, AgentSession, resume_agent_session, start_agent_session
-from .data_models import ExecutionResult, RuntimeTask, RuntimeUpdate
+from .minimal_agent import resume_agent_session, start_agent_session
+from .data_models import AgentHandle, AgentRunResult, AgentSession, ExecutionResult, RuntimeTask, RuntimeUpdate
 
 StatusCallback = Callable[[RuntimeUpdate], None]
-
-
-@dataclass(slots=True)
-class AgentHandle:
-    session: AgentSession
-    task_id: str
-    stage_name: str
-    output_path: Path
 
 
 class ExecutionRuntime:

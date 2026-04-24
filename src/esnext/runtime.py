@@ -4,38 +4,27 @@ from __future__ import annotations
 
 import json, threading, time, uuid
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 
 from .executor import ExecutionRuntime
-from .minimal_agent import AgentSession, resume_agent_session, start_agent_session
-from .data_models import AgentRecord, ExecutionResult, RuntimeTask, RuntimeUpdate
+from .minimal_agent import resume_agent_session, start_agent_session
+from .data_models import AgentRecord, AgentSession, ExecutionResult, RuntimeEnvelope, RuntimeTask, RuntimeUpdate, ScheduledResume
 from .prompts import load_prompt
 
 
-@dataclass(slots=True)
-class RuntimeEnvelope:
-    agent_id: str
-    update: RuntimeUpdate
-
-
-@dataclass(slots=True)
-class ScheduledResume:
-    agent_id: str
-    due_at: float
-    message: str
-
-
-def supervisor_prompt_for(event: str) -> str:
-    prompt = load_prompt("supervisor")
+def supervisor_event_input(task_objective: str, event: str) -> str:
+    parts = [f"Task objective: {task_objective}", f"Event: {event}"]
     for line in event.splitlines():
         if line.strip().lower() == "status: background":
-            return f"{prompt}\n\n{load_prompt('supervisor_background')}"
+            parts += ["", load_prompt("supervisor_background")]
+            break
         if line.strip().lower() == "status: waiting":
-            return f"{prompt}\n\n{load_prompt('supervisor_waiting')}"
-    if "worker stalled" in event.lower():
-        return f"{prompt}\n\n{load_prompt('supervisor_stalled')}"
-    return prompt
+            parts += ["", load_prompt("supervisor_waiting")]
+            break
+    else:
+        if "worker stalled" in event.lower():
+            parts += ["", load_prompt("supervisor_stalled")]
+    return "\n".join(parts)
 
 
 class RuntimeSupervisor:
@@ -204,17 +193,18 @@ class RuntimeSupervisor:
             task = self._task
             if not task: return
             session = self._supervisor
+            user_input = supervisor_event_input(str(task["objective"]), text)
             if session is None:
                 session = start_agent_session(
-                    f"Task objective: {task['objective']}\nEvent: {text}",
+                    user_input,
                     cwd=self._workspace_root or Path.cwd(),
-                    system_prompt=supervisor_prompt_for(text),
+                    system_prompt=load_prompt("supervisor"),
                     log_path=(self._workspace_root or Path.cwd()) / f"supervisor-{task['task_id']}.log",
                     tools=self._runtime_tools(),
                 )
                 self._supervisor = session
                 result = session.last_result
-            else: result = resume_agent_session(session, text)
+            else: result = resume_agent_session(session, user_input)
             if result: self._apply_supervisor_result(result.final_output or "")
         finally:
             with self._queue_ready:

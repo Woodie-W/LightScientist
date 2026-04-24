@@ -5,10 +5,18 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+from langgraph.checkpoint.memory import MemorySaver
 
 ExecutionState = Literal["running", "waiting", "background", "completed", "failed", "cancelled"]
 ResumeMode = Literal["message", "interrupt"]
+AgentRunState = Literal["completed", "failed", "max_steps_reached", "running", "waiting", "background", "cancelled"]
+
+
+# ---------------------------------------------------------------
+# manager / runtime
+# ---------------------------------------------------------------
 
 
 @dataclass(slots=True)
@@ -46,6 +54,9 @@ class ExecutionResult:
     notes: list[str] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------
+# minimal_agent / runtime
+# ---------------------------------------------------------------
 @dataclass(slots=True)
 class AgentProgress:
     """Lightweight third-layer progress shared with the runtime layer."""
@@ -110,6 +121,9 @@ class HasAgentProgress:
         super().__setattr__(name, value)
 
 
+# ---------------------------------------------------------------
+# runtime - worker
+# ---------------------------------------------------------------
 @dataclass(slots=True)
 class RuntimeUpdate:
     """Unified status update passed from lower layers into RuntimeSupervisor."""
@@ -158,6 +172,94 @@ class AgentRecord:
             "workspace_root": str(self.workspace_root) if self.workspace_root else "",
             "output_path": str(self.output_path) if self.output_path else "",
         }
+
+
+# ---------------------------------------------------------------
+# runtime 内部队列
+# ---------------------------------------------------------------
+@dataclass(slots=True)
+class RuntimeEnvelope:
+    agent_id: str
+    update: RuntimeUpdate
+
+
+@dataclass(slots=True)
+class ScheduledResume:
+    agent_id: str
+    due_at: float
+    message: str
+
+
+# ---------------------------------------------------------------
+# executor
+# ---------------------------------------------------------------
+@dataclass(slots=True)
+class AgentHandle:
+    session: AgentSession
+    task_id: str
+    stage_name: str
+    output_path: Path
+
+
+
+# ---------------------------------------------------------------
+# minimal_agent
+# ---------------------------------------------------------------
+@dataclass(slots=True)
+class AgentRunResult(HasAgentSessionInfo, HasAgentProgress):
+    """Final result for one start/resume cycle of a third-layer session."""
+
+    status: AgentRunState
+    info: AgentSessionInfo
+    messages: list[dict[str, str]]
+    last_model_output: str = ""  # Raw last assistant output before result normalization.
+    last_action: str = ""  # Normalized last tool/action summary, such as execute or ask_input.
+    final_output: str = ""  # User-facing final text, waiting question, or background note.
+    progress: AgentProgress = field(default_factory=AgentProgress)
+    error: str = ""
+    command_outputs: list[str] = field(default_factory=list)  # Logged workspace-tool outputs.
+
+    @classmethod
+    def from_trace(cls, trace: "RunTrace", status: str, final_output: str | None = None) -> "AgentRunResult":
+        return cls(
+            status,  # type: ignore[arg-type]
+            trace.info.snapshot(),
+            trace.messages,
+            trace.last_model_output,
+            trace.last_action,
+            trace.final_output if final_output is None else final_output,
+            trace.progress.snapshot(),
+            trace.error,
+            trace.command_outputs,
+        )
+
+
+@dataclass(slots=True)
+class RunTrace(HasAgentSessionInfo, HasAgentProgress):
+    """Mutable trace collected during one start/resume cycle."""
+
+    info: AgentSessionInfo
+    status: Literal["running", "waiting", "background", "completed", "failed"] = "running"
+    progress: AgentProgress = field(default_factory=AgentProgress)
+    last_model_output: str = ""
+    last_action: str = ""
+    final_output: str = ""
+    error: str = ""
+    max_steps_reached: bool = False
+    command_outputs: list[str] = field(default_factory=list)
+    messages: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AgentSession(HasAgentSessionInfo):
+    info: AgentSessionInfo
+    system_prompt: str
+    checkpointer: MemorySaver
+    tools: list[Any] = field(default_factory=list)
+    resume_mode: ResumeMode = "message"
+    last_result: AgentRunResult | None = None
+
+
 
 
 # Backward-compatible aliases from the earlier two-layer skeleton.

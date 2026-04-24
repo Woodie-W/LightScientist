@@ -14,7 +14,7 @@ from esnext.manager import StageManager
 from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
 from esnext.data_models import RuntimeTask, RuntimeUpdate, StageRequest
 from esnext.runtime import RuntimeSupervisor
-from esnext.runtime import supervisor_prompt_for
+from esnext.runtime import supervisor_event_input
 from esnext.prompts import load_prompt
 
 
@@ -409,8 +409,9 @@ def test_runtime_supervisor_schedules_worker_resume(tmp_path: Path, monkeypatch)
 
 
 def test_supervisor_prompt_adds_status_specific_guidance() -> None:
-    assert "intentional suspension" in supervisor_prompt_for("Worker: a\nStatus: background")
-    assert "schedule_worker_resume" in supervisor_prompt_for("Worker: a\nStatus: background")
-    assert "missing input" in supervisor_prompt_for("Worker: a\nStatus: waiting")
-    assert "not shown progress" in supervisor_prompt_for("Worker: a\nText: Worker stalled.")
+    assert "intentional suspension" in supervisor_event_input("task", "Worker: a\nStatus: background")
+    assert "schedule_worker_resume" in supervisor_event_input("task", "Worker: a\nStatus: background")
+    assert "missing input" in supervisor_event_input("task", "Worker: a\nStatus: waiting")
+    assert "not shown progress" in supervisor_event_input("task", "Worker: a\nText: Worker stalled.")
+    assert "second-layer supervisor" in load_prompt("supervisor")
     assert "ask_input" in load_prompt("worker")

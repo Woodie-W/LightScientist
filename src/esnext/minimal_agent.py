@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json, sys, time, uuid
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -12,65 +11,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from .backends import LoggingWorkspaceBackend, ask_input, log_step, suspend_background
-from .data_models import AgentProgress, AgentSessionInfo, HasAgentProgress, HasAgentSessionInfo, RuntimeUpdate
+from .data_models import AgentRunResult, AgentSession, AgentSessionInfo, RunTrace, RuntimeUpdate
 from .model_config import MODEL, build_chat_model
 from .prompts import load_prompt
 
 SYS = load_prompt("worker")
-
-
-@dataclass(slots=True)
-class AgentRunResult(HasAgentSessionInfo, HasAgentProgress):
-    """Final result for one start/resume cycle of a third-layer session."""
-
-    status: Literal["completed", "failed", "max_steps_reached", "running", "waiting", "background", "cancelled"]
-    info: AgentSessionInfo
-    messages: list[dict[str, str]]
-    last_model_output: str = ""  # Raw last assistant output before result normalization.
-    last_action: str = ""  # Normalized last tool/action summary, such as execute or ask_input.
-    final_output: str = ""  # User-facing final text, waiting question, or background note.
-    progress: AgentProgress = field(default_factory=AgentProgress)
-    error: str = ""
-    command_outputs: list[str] = field(default_factory=list)  # Logged workspace-tool outputs.
-
-    @classmethod
-    def from_trace(cls, trace: "RunTrace", status: str, final_output: str | None = None) -> "AgentRunResult":
-        return cls(
-            status,
-            trace.info.snapshot(),
-            trace.messages,
-            trace.last_model_output,
-            trace.last_action,
-            trace.final_output if final_output is None else final_output,
-            trace.progress.snapshot(),
-            trace.error,
-            trace.command_outputs,
-        )
-
-
-@dataclass(slots=True)
-class RunTrace(HasAgentSessionInfo, HasAgentProgress):
-    """Mutable trace collected during one start/resume cycle."""
-
-    info: AgentSessionInfo
-    status: Literal["running", "waiting", "background", "completed", "failed"] = "running"
-    progress: AgentProgress = field(default_factory=AgentProgress)
-    last_model_output: str = ""
-    last_action: str = ""
-    final_output: str = ""
-    error: str = ""
-    max_steps_reached: bool = False
-    command_outputs: list[str] = field(default_factory=list)
-    messages: list[dict[str, str]] = field(default_factory=list)
-
-@dataclass(slots=True)
-class AgentSession(HasAgentSessionInfo):
-    info: AgentSessionInfo
-    system_prompt: str
-    checkpointer: MemorySaver
-    tools: list[Any] = field(default_factory=list)
-    resume_mode: Literal["message", "interrupt"] = "message"
-    last_result: AgentRunResult | None = None
 
 
 def start_agent_session(
