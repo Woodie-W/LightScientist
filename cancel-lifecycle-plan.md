@@ -71,8 +71,17 @@ Implement real subprocess cancellation:
 3. On force cancel, terminate then kill remaining processes.
 4. Preserve files, logs, and `agent-run.md`.
 
-## Current Scope
+## Implemented
 
-Do phase 1 only.
+- Cooperative cancellation through `finish_cancelled(summary)`.
+- `ExecutionRuntime.cancel(agent_id)`.
+- Second-layer result store.
+- Runtime-owned cancellation delivery result.
+- `execute` process registry.
+- Cancel-time subprocess group termination.
+- Hard timeout around cooperative cancellation finalization.
+- Non-blocking supervisor `start_worker` and `resume_worker` tools.
 
-Real subprocess kill is intentionally left for phase 2 because the current backend does not keep subprocess handles.
+## Remaining
+
+- Direct Python thread termination is not implemented because Python threads cannot be safely killed.

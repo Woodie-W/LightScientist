@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json, threading
 import time
 from collections import deque
 from pathlib import Path
@@ -9,10 +10,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict, Field
 
+from esnext.backends import CommandProcessRegistry, WorkspaceBackend
 from esnext.cli import main, repl
+from esnext.executor import ExecutionRuntime
 from esnext.manager import StageManager
 from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
-from esnext.data_models import RuntimeTask, RuntimeUpdate, StageRequest
+from esnext.data_models import RuntimeTask, RuntimeUpdate, StageRequest, SupervisorEvent
 from esnext.runtime import RuntimeSupervisor
 from esnext.runtime import supervisor_event_input
 from esnext.prompts import load_prompt
@@ -355,6 +358,21 @@ def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> No
     assert resumed.status == "cancelled"
 
 
+def test_executor_cancel_times_out_and_returns_cancelled(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(monkeypatch, "tool: suspend_background|实验已启动。", "", scope_root=tmp_path)
+    executor = ExecutionRuntime(cancel_timeout=0.01)
+    result = executor.start(
+        "agent-timeout",
+        RuntimeTask("timeout", "interactive", "Run experiment", tmp_path / "agent-run.md", tmp_path, "Run experiment", True),
+    )
+    assert result.status == "background"
+    monkeypatch.setattr("esnext.executor.resume_agent_session", lambda *_, **__: time.sleep(1))
+    cancelled = executor.cancel("agent-timeout")
+    assert cancelled.status == "cancelled"
+    assert "timed out" in cancelled.summary
+    assert executor.get_session("agent-timeout") is None
+
+
 def test_runtime_supervisor_does_not_forward_running_progress(tmp_path: Path) -> None:
     from esnext.data_models import AgentProgress, AgentRecord
 
@@ -417,10 +435,40 @@ def test_runtime_supervisor_schedules_worker_resume(tmp_path: Path, monkeypatch)
     assert calls == [("resume", agent_id, "请检查实验是否有进展。")]
 
 
+def test_workspace_backend_can_kill_running_execute(tmp_path: Path) -> None:
+    registry = CommandProcessRegistry()
+    backend = WorkspaceBackend(root_dir=tmp_path, process_registry=registry, timeout=30)
+    result_box = {}
+    thread = threading.Thread(target=lambda: result_box.setdefault("result", backend.execute("sleep 30")), daemon=True)
+    thread.start()
+    deadline = time.time() + 2
+    while time.time() < deadline and registry.running_count() == 0:
+        time.sleep(0.01)
+    assert registry.running_count() == 1
+    assert registry.kill_all(grace_seconds=0.1) == 1
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert result_box["result"].exit_code != 0
+
+
+def test_runtime_supervisor_tools_dispatch_workers_without_waiting(tmp_path: Path, monkeypatch) -> None:
+    supervisor = RuntimeSupervisor()
+    supervisor._task = {"task_id": "taskasync", "objective": "objective", "worker_ids": [], "status": "running", "summary": ""}
+    supervisor._workspace_root = tmp_path
+    monkeypatch.setattr(supervisor, "_run", lambda mode, agent_id, arg: time.sleep(0.5))
+    tools = {tool.name: tool for tool in supervisor._runtime_tools()}
+    started = time.monotonic()
+    raw = tools["start_worker"].invoke({"objective": "do work"})
+    assert time.monotonic() - started < 0.2
+    result = json.loads(raw)
+    assert result["status"] == "accepted"
+    assert result["agent_id"] in supervisor._agents
+
+
 def test_supervisor_prompt_adds_status_specific_guidance() -> None:
-    assert "intentional suspension" in supervisor_event_input("task", "Worker: a\nStatus: background")
-    assert "schedule_worker_resume" in supervisor_event_input("task", "Worker: a\nStatus: background")
-    assert "missing input" in supervisor_event_input("task", "Worker: a\nStatus: waiting")
-    assert "not shown progress" in supervisor_event_input("task", "Worker: a\nText: Worker stalled.")
+    assert "intentional suspension" in supervisor_event_input("task", SupervisorEvent("a", "background"))
+    assert "schedule_worker_resume" in supervisor_event_input("task", SupervisorEvent("a", "background"))
+    assert "missing input" in supervisor_event_input("task", SupervisorEvent("a", "waiting"))
+    assert "not shown progress" in supervisor_event_input("task", SupervisorEvent("a", "running", "Worker stalled.", kind="stall"))
     assert "second-layer supervisor" in load_prompt("supervisor")
     assert "ask_input" in load_prompt("worker")

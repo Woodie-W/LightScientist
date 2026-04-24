@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import re
+import os, re, signal, subprocess, threading, time
 from pathlib import Path
 from typing import Any
 
 from deepagents.backends import LocalShellBackend
+from deepagents.backends.protocol import ExecuteResponse
 from langchain.tools import tool
 from langgraph.types import interrupt
 
@@ -57,14 +58,62 @@ def _convert_virtual_paths(command: str, workspace_name: str) -> str:
 
 
 # ---------------------------------------------------------------
-# 官方工作区后端，增强
+# 官方工作区后端，增强loger等
 # ---------------------------------------------------------------
+class CommandProcessRegistry:
+    """Tracks running shell processes so cancellation can terminate them."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._processes: set[subprocess.Popen[str]] = set()
+
+    def add(self, process: subprocess.Popen[str]) -> None:
+        with self._lock:
+            self._processes.add(process)
+
+    def remove(self, process: subprocess.Popen[str]) -> None:
+        with self._lock:
+            self._processes.discard(process)
+
+    def running_count(self) -> int:
+        with self._lock:
+            return sum(1 for process in self._processes if process.poll() is None)
+
+    def kill_all(self, grace_seconds: float = 1.0) -> int:
+        with self._lock:
+            processes = [process for process in self._processes if process.poll() is None]
+        for process in processes:
+            self._signal_process(process, signal.SIGTERM)
+        deadline = time.monotonic() + grace_seconds
+        while time.monotonic() < deadline and any(process.poll() is None for process in processes):
+            time.sleep(0.05)
+        for process in processes:
+            if process.poll() is None:
+                self._signal_process(process, signal.SIGKILL)
+        return len(processes)
+
+    def _signal_process(self, process: subprocess.Popen[str], sig: int) -> None:
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            return
+        except Exception:
+            try:
+                process.send_signal(sig)
+            except Exception:
+                return
+
+
 class WorkspaceBackend(LocalShellBackend):
     """Workspace-rooted backend with EvoScientist-style virtual path handling."""
 
-    def __init__(self, *, root_dir: str | Path, timeout: int = 30, env: dict[str, str] | None = None, inherit_env: bool = False) -> None:
+    def __init__(
+        self, *, root_dir: str | Path, timeout: int = 30, env: dict[str, str] | None = None,
+        inherit_env: bool = False, process_registry: CommandProcessRegistry | None = None,
+    ) -> None:
         super().__init__(root_dir=str(Path(root_dir).resolve()), virtual_mode=True, timeout=timeout, env=env, inherit_env=inherit_env)
         self._workspace_name = self.cwd.name
+        self.process_registry = process_registry or CommandProcessRegistry()
 
     def _resolve_path(self, key: str) -> Path:
         if key == f"/{self._workspace_name}":
@@ -84,12 +133,65 @@ class WorkspaceBackend(LocalShellBackend):
 
     def execute(self, command: str, *, timeout: int | None = None):
         command = _convert_virtual_paths(command, self._workspace_name)
-        return super().execute(command, timeout=timeout)
+        if not command or not isinstance(command, str):
+            return ExecuteResponse(output="Error: Command must be a non-empty string.", exit_code=1, truncated=False)
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        if effective_timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {effective_timeout}")
+        process: subprocess.Popen[str] | None = None
+        try:
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=self._env,
+                cwd=str(self.cwd),
+                start_new_session=True,
+            )
+            self.process_registry.add(process)
+            stdout, stderr = process.communicate(timeout=effective_timeout)
+            return _execute_response(stdout, stderr, process.returncode, self._max_output_bytes)
+        except subprocess.TimeoutExpired:
+            if process:
+                self.process_registry.kill_all()
+            return ExecuteResponse(output=_timeout_message(effective_timeout, timeout is not None), exit_code=124, truncated=False)
+        except Exception as e:
+            return ExecuteResponse(output=f"Error executing command ({type(e).__name__}): {e}", exit_code=1, truncated=False)
+        finally:
+            if process:
+                self.process_registry.remove(process)
+
+
+def _execute_response(stdout: str, stderr: str, returncode: int | None, max_output_bytes: int) -> ExecuteResponse:
+    output_parts = []
+    if stdout:
+        output_parts.append(stdout)
+    if stderr:
+        output_parts.extend(f"[stderr] {line}" for line in stderr.strip().split("\n"))
+    output = "\n".join(output_parts) if output_parts else "<no output>"
+    truncated = False
+    if len(output) > max_output_bytes:
+        output = output[:max_output_bytes] + f"\n\n... Output truncated at {max_output_bytes} bytes."
+        truncated = True
+    if returncode:
+        output = f"{output.rstrip()}\n\nExit code: {returncode}"
+    return ExecuteResponse(output=output, exit_code=returncode, truncated=truncated)
+
+
+def _timeout_message(seconds: int, custom: bool) -> str:
+    if custom:
+        return f"Error: Command timed out after {seconds} seconds (custom timeout). The command may be stuck or require more time."
+    return f"Error: Command timed out after {seconds} seconds. For long-running commands, re-run using the timeout parameter."
 
 
 class LoggingWorkspaceBackend(WorkspaceBackend):
-    def __init__(self, *, trace: Any, log_path: Path, root_dir: Path, timeout: int = 30) -> None:
-        super().__init__(root_dir=root_dir, timeout=timeout, env=ENV, inherit_env=False)
+    def __init__(
+        self, *, trace: Any, log_path: Path, root_dir: Path, timeout: int = 30,
+        process_registry: CommandProcessRegistry | None = None,
+    ) -> None:
+        super().__init__(root_dir=root_dir, timeout=timeout, env=ENV, inherit_env=False, process_registry=process_registry)
         self.trace, self.log_path = trace, log_path
 
     def _log_backend_output(self, name: str, output: Any) -> None:

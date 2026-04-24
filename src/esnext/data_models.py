@@ -198,6 +198,29 @@ class ScheduledResume:
     message: str
 
 
+@dataclass(slots=True)
+class SupervisorEvent:
+    agent_id: str
+    status: ExecutionState
+    text: str = ""
+    summary: str = ""
+    kind: str = "worker"
+
+    @property
+    def prompt_key(self) -> str:
+        if self.kind == "stall":
+            return "stalled"
+        return self.status
+
+    def to_prompt_text(self) -> str:
+        parts = [f"Worker: {self.agent_id}", f"Status: {self.status}"]
+        if self.text:
+            parts.append(f"Text: {self.text}")
+        if self.summary:
+            parts.append(f"Summary: {self.summary}")
+        return "\n".join(parts)
+
+
 # ---------------------------------------------------------------
 # executor
 # ---------------------------------------------------------------
@@ -266,6 +289,7 @@ class AgentSession(HasAgentSessionInfo):
     tools: list[Any] = field(default_factory=list)
     resume_mode: ResumeMode = "message"
     last_result: AgentRunResult | None = None
+    process_registry: Any | None = None
 
 
 

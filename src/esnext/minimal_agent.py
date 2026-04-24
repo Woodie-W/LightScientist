@@ -10,7 +10,7 @@ from langgraph.types import Command
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from .backends import LoggingWorkspaceBackend, ask_input, finish_cancelled, log_step, suspend_background
+from .backends import CommandProcessRegistry, LoggingWorkspaceBackend, ask_input, finish_cancelled, log_step, suspend_background
 from .data_models import AgentRunResult, AgentSession, AgentSessionInfo, RunTrace, RuntimeUpdate
 from .model_config import MODEL, build_chat_model
 from .prompts import load_prompt
@@ -22,12 +22,19 @@ def start_agent_session(
     goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
     status_cb: Callable[[RuntimeUpdate], None] | None = None, log_path: str | Path | None = None, tools: list[Any] | None = None,
 ) -> AgentSession:
+    session = create_agent_session(cwd=cwd, model=model, max_steps=max_steps, system_prompt=system_prompt, log_path=log_path, tools=tools)
+    session.last_result = resume_agent_session(session, goal, status_cb=status_cb, start=True)
+    return session
+
+
+def create_agent_session(
+    *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
+    log_path: str | Path | None = None, tools: list[Any] | None = None,
+) -> AgentSession:
     wd = Path(cwd).resolve() if cwd else Path.cwd()
     lp = Path(log_path).resolve() if log_path else (wd / "agent-debug.log")
     info = AgentSessionInfo(uuid.uuid4().hex[:8], uuid.uuid4().hex[:8], wd, lp, model, max_steps)
-    session = AgentSession(info, system_prompt, MemorySaver(), list(tools or []))
-    session.last_result = resume_agent_session(session, goal, status_cb=status_cb, start=True)
-    return session
+    return AgentSession(info, system_prompt, MemorySaver(), list(tools or []), process_registry=CommandProcessRegistry())
 
 
 def resume_agent_session(
@@ -42,7 +49,7 @@ def resume_agent_session(
         model=chat,
         system_prompt=session.system_prompt,
         tools=[ask_input, suspend_background, finish_cancelled, *session.tools],
-        backend=LoggingWorkspaceBackend(trace=trace, log_path=session.log_path, root_dir=session.cwd),
+        backend=LoggingWorkspaceBackend(trace=trace, log_path=session.log_path, root_dir=session.cwd, process_registry=session.process_registry),
         subagents=[],
         middleware=(),
         checkpointer=session.checkpointer,

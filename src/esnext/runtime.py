@@ -8,22 +8,18 @@ from pathlib import Path
 
 from .executor import ExecutionRuntime
 from .minimal_agent import resume_agent_session, start_agent_session
-from .data_models import AgentRecord, AgentSession, ExecutionResult, RuntimeEnvelope, RuntimeTask, RuntimeUpdate, ScheduledResume
+from .data_models import AgentRecord, AgentSession, ExecutionResult, RuntimeEnvelope, RuntimeTask, RuntimeUpdate, ScheduledResume, SupervisorEvent
 from .prompts import load_prompt
 
 
-def supervisor_event_input(task_objective: str, event: str) -> str:
-    parts = [f"Task objective: {task_objective}", f"Event: {event}"]
-    for line in event.splitlines():
-        if line.strip().lower() == "status: background":
-            parts += ["", load_prompt("supervisor_background")]
-            break
-        if line.strip().lower() == "status: waiting":
-            parts += ["", load_prompt("supervisor_waiting")]
-            break
-    else:
-        if "worker stalled" in event.lower():
-            parts += ["", load_prompt("supervisor_stalled")]
+def supervisor_event_input(task_objective: str, event: SupervisorEvent) -> str:
+    parts = [f"Task objective: {task_objective}", f"Event: {event.to_prompt_text()}"]
+    if event.prompt_key == "background":
+        parts += ["", load_prompt("supervisor_background")]
+    elif event.prompt_key == "waiting":
+        parts += ["", load_prompt("supervisor_waiting")]
+    elif event.prompt_key == "stalled":
+        parts += ["", load_prompt("supervisor_stalled")]
     return "\n".join(parts)
 
 
@@ -42,7 +38,7 @@ class RuntimeSupervisor:
         self._waiters: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._queue: deque[RuntimeEnvelope] = deque()
-        self._supervisor_queue: deque[str] = deque()
+        self._supervisor_queue: deque[SupervisorEvent] = deque()
         self._scheduled_resumes: list[ScheduledResume] = []
         self._queue_ready = threading.Condition(self._lock)
         self._controller = threading.Thread(target=self._control_loop, daemon=True, name="runtime-controller")
@@ -76,10 +72,17 @@ class RuntimeSupervisor:
         return self._final_result(agent_id)
 
     def start_worker(self, task_id: str, objective: str) -> ExecutionResult:
+        agent_id = self._start_worker_async(task_id, objective)
+        if not agent_id.startswith("agent-"):
+            return ExecutionResult(task_id, "failed", agent_id, Path.cwd() / "agent-run.md")
+        self._waiters[agent_id].wait()
+        return self._final_result(agent_id)
+
+    def _start_worker_async(self, task_id: str, objective: str) -> str:
         task = self.get_task(task_id)
-        if not task: return ExecutionResult(task_id, "failed", f"Unknown task: {task_id}.", Path.cwd() / "agent-run.md")
+        if not task: return f"Unknown task: {task_id}."
         if task["status"] in {"completed", "failed", "cancelled"}: 
-            return ExecutionResult(task_id, "failed", f"Cannot start worker for {task['status']} task.", Path.cwd() / "agent-run.md")
+            return f"Cannot start worker for {task['status']} task."
         worker_task_id = f"{task_id}-{uuid.uuid4().hex[:4]}"
         agent_id = f"agent-{worker_task_id}"
         worker_root = (self._workspace_root or Path.cwd()) / agent_id
@@ -91,18 +94,27 @@ class RuntimeSupervisor:
             self._waiters[agent_id] = threading.Event()
         self._push_update(agent_id, RuntimeUpdate("running", "Worker created."))
         threading.Thread(target=self._run, args=("start", agent_id, runtime_task), daemon=True, name=f"runtime-start-{agent_id}").start()
-        self._waiters[agent_id].wait()
-        return self._final_result(agent_id)
+        return agent_id
 
     def resume(self, agent_id: str, user_input: str) -> ExecutionResult:
         with self._lock:
-            if agent_id not in self._agents: return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
-            record = self._agents[agent_id]
-            if record.status == "cancelled": return self._results.get(agent_id) or record.result or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
-            self._waiters[agent_id] = threading.Event()
-        threading.Thread(target=self._run, args=("resume", agent_id, user_input), daemon=True, name=f"runtime-resume-{agent_id}").start()
+            record = self._agents.get(agent_id)
+            if record and record.status == "cancelled":
+                return self._results.get(agent_id) or record.result or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
+        error = self._resume_worker_async(agent_id, user_input)
+        if error:
+            return ExecutionResult(agent_id.removeprefix("agent-"), "failed", error, Path.cwd() / "agent-run.md")
         self._waiters[agent_id].wait()
         return self._final_result(agent_id)
+
+    def _resume_worker_async(self, agent_id: str, user_input: str) -> str:
+        with self._lock:
+            if agent_id not in self._agents: return f"Unknown agent session: {agent_id}."
+            record = self._agents[agent_id]
+            if record.status == "cancelled": return "Worker cancelled."
+            self._waiters[agent_id] = threading.Event()
+        threading.Thread(target=self._run, args=("resume", agent_id, user_input), daemon=True, name=f"runtime-resume-{agent_id}").start()
+        return ""
 
     def cancel_worker(self, agent_id: str) -> ExecutionResult:
         with self._lock:
@@ -113,7 +125,7 @@ class RuntimeSupervisor:
         with self._queue_ready:
             self._update_agent(agent_id, RuntimeUpdate("cancelled", "Worker cancelled.", result=result))
             if agent_id in self._waiters: self._waiters[agent_id].set()
-            self._supervisor_queue.append(f"Worker: {agent_id}\nStatus: cancelled\nText: Worker cancelled.\nSummary: {result.summary}")
+            self._supervisor_queue.append(SupervisorEvent(agent_id, "cancelled", "Worker cancelled.", result.summary))
             self._queue_ready.notify()
             return result
 
@@ -178,24 +190,21 @@ class RuntimeSupervisor:
             return
         self._update_agent(agent_id, update)
         should_notify_supervisor = old_status != update.status or update.result is not None
-        parts = [f"Worker: {agent_id}", f"Status: {update.status}"]
-        if update.text: parts.append(f"Text: {update.text}")
-        if update.result: parts.append(f"Summary: {update.result.summary}")
         if should_notify_supervisor:
             with self._queue_ready:
-                self._supervisor_queue.append("\n".join(parts))
+                self._supervisor_queue.append(SupervisorEvent(agent_id, update.status, update.text, update.result.summary if update.result else ""))
                 self._queue_ready.notify()
         if update.result and agent_id in self._waiters: self._waiters[agent_id].set()
 
     # ---------------------------------------------------------------
     # Supervisor Agent
     # ---------------------------------------------------------------
-    def _run_supervisor(self, text: str) -> None:
+    def _run_supervisor(self, event: SupervisorEvent) -> None:
         try:
             task = self._task
             if not task: return
             session = self._supervisor
-            user_input = supervisor_event_input(str(task["objective"]), text)
+            user_input = supervisor_event_input(str(task["objective"]), event)
             if session is None:
                 session = start_agent_session(
                     user_input,
@@ -267,39 +276,46 @@ class RuntimeSupervisor:
 
         @tool("resume_worker", parse_docstring=True)
         def resume_worker_tool(agent_id: str, text: str) -> str:
-            """Resume a worker immediately with new input.
+            """Dispatch a worker resume in the background.
 
             Use this when a waiting or background worker can continue now. For a
             background worker, include concrete new information from files, logs,
-            or external results when available.
+            or external results when available. This tool returns immediately;
+            the worker result will arrive later as a supervisor event.
 
             Args:
                 agent_id: Worker id to resume.
                 text: Message to send to the worker as resume input.
 
             Returns:
-                JSON object with the worker run status and summary.
+                JSON object showing whether the resume was accepted.
             """
-            result = self.resume(agent_id, text)
-            return json.dumps({"status": result.status, "summary": result.summary}, ensure_ascii=False)
+            error = self._resume_worker_async(agent_id, text)
+            if error:
+                return json.dumps({"status": "failed", "summary": error}, ensure_ascii=False)
+            return json.dumps({"status": "accepted", "agent_id": agent_id}, ensure_ascii=False)
 
         @tool("start_worker", parse_docstring=True)
         def start_worker_tool(objective: str) -> str:
-            """Start a new worker under the current task.
+            """Dispatch a new worker under the current task.
 
             Use this only when the existing workers cannot reasonably be resumed
-            to make progress or when parallel investigation is needed.
+            to make progress or when parallel investigation is needed. This
+            tool returns immediately; the worker result will arrive later as a
+            supervisor event.
 
             Args:
                 objective: Concrete objective for the new worker.
 
             Returns:
-                JSON object with the worker start status, summary, and task_id.
+                JSON object showing whether the worker start was accepted.
             """
             if not self._task: return json.dumps({"status": "failed", "summary": "No active task."}, ensure_ascii=False)
             task_id = str(self._task["task_id"])
-            result = self.start_worker(task_id, objective)
-            return json.dumps({"status": result.status, "summary": result.summary, "task_id": result.task_id}, ensure_ascii=False)
+            agent_id = self._start_worker_async(task_id, objective)
+            if not agent_id.startswith("agent-"):
+                return json.dumps({"status": "failed", "summary": agent_id}, ensure_ascii=False)
+            return json.dumps({"status": "accepted", "agent_id": agent_id}, ensure_ascii=False)
 
         @tool("cancel_worker", parse_docstring=True)
         def cancel_worker_tool(agent_id: str) -> str:
@@ -398,10 +414,8 @@ class RuntimeSupervisor:
                 continue
             record.stall_reported = True
             record.stalled_action_count = record.progress.action_count
-            self._supervisor_queue.append(
-                f"Worker: {agent_id}\nStatus: running\nText: Worker stalled.\n"
-                f"Progress: step_count={record.progress.step_count}, action_count={record.progress.action_count}"
-            )
+            text = f"Worker stalled. Progress: step_count={record.progress.step_count}, action_count={record.progress.action_count}"
+            self._supervisor_queue.append(SupervisorEvent(agent_id, "running", text, kind="stall"))
         if self._supervisor_queue: self._queue_ready.notify()
 
     # 定时恢复

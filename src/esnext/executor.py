@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Callable
 
-from .minimal_agent import resume_agent_session, start_agent_session
+from .minimal_agent import create_agent_session, resume_agent_session
 from .data_models import AgentHandle, AgentRunResult, AgentSession, ExecutionResult, RuntimeTask, RuntimeUpdate
 
 StatusCallback = Callable[[RuntimeUpdate], None]
@@ -14,8 +15,11 @@ StatusCallback = Callable[[RuntimeUpdate], None]
 class ExecutionRuntime:
     """Third-layer execution runtime with command-line capability only."""
 
-    def __init__(self) -> None:
+    def __init__(self, cancel_timeout: float = 30.0) -> None:
+        self.cancel_timeout = cancel_timeout
         self._agents: dict[str, AgentHandle] = {}
+        self._running: set[str] = set()
+        self._cancelled: dict[str, ExecutionResult] = {}
 
     def start(self, agent_id: str, task: RuntimeTask, status_cb: StatusCallback | None = None) -> ExecutionResult:
         task.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -31,15 +35,27 @@ class ExecutionRuntime:
     ) -> ExecutionResult:
         handle = self._agents.get(agent_id)
         if not handle:
-            return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
+            return self._cancelled.get(agent_id) or ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
         self._emit(status_cb, "running", "Resuming persistent agent session.")
-        r = resume_agent_session(handle.session, user_input, status_cb=status_cb)
+        self._running.add(agent_id)
+        try:
+            r = resume_agent_session(handle.session, user_input, status_cb=status_cb)
+        finally:
+            self._running.discard(agent_id)
+        if agent_id in self._cancelled:
+            return self._cancelled[agent_id]
         return self._write_result(handle.task_id, handle.stage_name, handle.output_path, handle.session.log_path, r, status_cb)
 
     def cancel(self, agent_id: str, status_cb: StatusCallback | None = None) -> ExecutionResult:
-        handle = self._agents.pop(agent_id, None)
+        handle = self._agents.get(agent_id)
         if not handle:
-            return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
+            return self._cancelled.get(agent_id) or ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
+        if agent_id in self._running:
+            killed = handle.session.process_registry.kill_all() if handle.session.process_registry else 0
+            result = self._cancel_result(agent_id, handle, f"Worker cancelled. Terminated {killed} running subprocess(es).", status_cb)
+            self._agents.pop(agent_id, None)
+            return result
+        handle = self._agents.pop(agent_id)
         self._emit(status_cb, "running", "Cancelling persistent agent session.")
         message = (
             "The upper layer cancelled this worker. Stop normal task progress now. "
@@ -47,15 +63,41 @@ class ExecutionRuntime:
             "documentation when useful, summarize completed work, unfinished work, preserved artifact paths, "
             "and next steps, then call finish_cancelled(summary)."
         )
-        try:
-            r = resume_agent_session(handle.session, message, status_cb=status_cb)
-        except Exception as e:
-            r = AgentRunResult("cancelled", handle.session.info.snapshot(), [], final_output=f"Worker cancelled. Finalization failed: {e}", error=str(e))
+        r = self._finalize_cancel(handle, message, status_cb)
         if r.status != "cancelled":
             r.status = "cancelled"  # type: ignore[assignment]
             if not r.final_output:
                 r.final_output = "Worker cancelled before producing a cancellation summary."
-        return self._write_result(handle.task_id, handle.stage_name, handle.output_path, handle.session.log_path, r, status_cb)
+        result = self._write_result(handle.task_id, handle.stage_name, handle.output_path, handle.session.log_path, r, status_cb)
+        self._cancelled[agent_id] = result
+        return result
+
+    def _finalize_cancel(self, handle: AgentHandle, message: str, status_cb: StatusCallback | None) -> AgentRunResult:
+        box: dict[str, AgentRunResult | Exception] = {}
+
+        def run() -> None:
+            try:
+                box["result"] = resume_agent_session(handle.session, message, status_cb=status_cb)
+            except Exception as e:
+                box["error"] = e
+
+        thread = threading.Thread(target=run, daemon=True, name=f"executor-cancel-{handle.task_id}")
+        thread.start()
+        thread.join(timeout=self.cancel_timeout)
+        if thread.is_alive():
+            killed = handle.session.process_registry.kill_all() if handle.session.process_registry else 0
+            return self._cancel_run_result(handle, f"Worker cancelled. Cancellation finalization timed out. Terminated {killed} running subprocess(es).")
+        if error := box.get("error"):
+            return self._cancel_run_result(handle, f"Worker cancelled. Finalization failed: {error}", str(error))
+        return box.get("result") or self._cancel_run_result(handle, "Worker cancelled before producing a cancellation summary.")
+
+    def _cancel_result(self, agent_id: str, handle: AgentHandle, summary: str, status_cb: StatusCallback | None) -> ExecutionResult:
+        result = self._write_result(handle.task_id, handle.stage_name, handle.output_path, handle.session.log_path, self._cancel_run_result(handle, summary), status_cb)
+        self._cancelled[agent_id] = result
+        return result
+
+    def _cancel_run_result(self, handle: AgentHandle, summary: str, error: str = "") -> AgentRunResult:
+        return AgentRunResult("cancelled", handle.session.info.snapshot(), [], final_output=summary, error=error)
 
     def get_session(self, agent_id: str) -> AgentSession | None:
         handle = self._agents.get(agent_id)
@@ -65,11 +107,17 @@ class ExecutionRuntime:
         self._emit(status_cb, "running", "Minimal agent loop started.")
         log_path = task.workspace_root / "agent-debug.log"
         try:
-            session = start_agent_session(task.objective, cwd=task.workspace_root, status_cb=status_cb, log_path=log_path)
+            session = create_agent_session(cwd=task.workspace_root, log_path=log_path)
+            self._agents[agent_id] = AgentHandle(session, task.task_id, task.stage_name, task.output_path)
+            self._running.add(agent_id)
+            session.last_result = resume_agent_session(session, task.objective, status_cb=status_cb, start=True)
         except Exception as e:
             self._emit(status_cb, "failed", f"Minimal agent failed: {e}")
             return ExecutionResult(task.task_id, "failed", f"Minimal agent failed: {e}", task.output_path)
-        self._agents[agent_id] = AgentHandle(session, task.task_id, task.stage_name, task.output_path)
+        finally:
+            self._running.discard(agent_id)
+        if agent_id in self._cancelled:
+            return self._cancelled[agent_id]
         r = session.last_result or AgentRunResult("failed", session.info.snapshot(), [], error="Agent session did not return a result.")
         return self._write_result(task.task_id, task.stage_name, task.output_path, log_path, r, status_cb)
 

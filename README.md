@@ -51,6 +51,7 @@ worker prompt 约束：
 - `ask_input` 的问题应简短且具体
 - 只有在已经启动了一个需要未来外部结果的工作时，才使用 `suspend_background`
 - 正常还能继续推进的工作，不要用 `suspend_background`
+- 收到取消请求后，第三层应整理当前成果、保留产物、写/更新交付文档，并调用 `finish_cancelled(summary)`
 
 ## 当前第二层
 
@@ -62,6 +63,8 @@ worker prompt 约束：
 - worker 状态变化会进入 supervisor 队列
 - 普通 `running -> running` 进度只更新记录，不触发 supervisor 决策
 - supervisor 空闲时，每次只处理队列中的一个事件
+- supervisor 调用 `start_worker` / `resume_worker` 是非阻塞发射，worker 结果之后再作为事件回流
+- 第二层用 `_results` 保存每个 worker 的交付结果
 
 supervisor agent 复用第三层 deepagent 运行方式，但使用 supervisor prompt 和 runtime tools。
 
@@ -76,6 +79,28 @@ supervisor agent 复用第三层 deepagent 运行方式，但使用 supervisor p
 - `schedule_worker_resume(agent_id, seconds, message)`
 
 `schedule_worker_resume` 的含义是：当前 supervisor 先做决定，写好未来要发给 worker 的文本；到时间后第二层直接 resume 对应 worker，不再先问 supervisor。
+
+## cancel
+
+当前 cancel 分两层：
+
+- 第二层 `RuntimeSupervisor.cancel_worker(agent_id)`
+  - 只负责调用第三层 `executor.cancel(agent_id)`
+  - 保存返回的 `ExecutionResult`
+  - 更新 worker 状态为 `cancelled`
+  - 向 supervisor 队列发送取消事件
+
+- 第三层 `ExecutionRuntime.cancel(agent_id)`
+  - 优先让 worker agent 自己整理交付
+  - 写回 `agent-run.md`
+  - 删除 executor 内的 session，后续不能继续 resume
+  - 如果收尾超时，会返回兜底 cancelled 结果
+  - 如果当前有 `execute` 子进程，会终止登记的进程组
+
+限制：
+
+- Python 线程本身不会被强制杀掉，因为这不安全
+- 取消会保留 `agent-run.md`、`agent-debug.log` 和 workspace 产物
 
 ## 结果字段语义
 
@@ -198,6 +223,9 @@ src/esnext/
 - 第二层 runtime tools
 - `background` 定时直接恢复
 - 简单进度计数和 running 卡死检测
+- `cancel -> finish_cancelled`
+- `execute` 子进程取消
+- supervisor worker tools 非阻塞发射
 
 还没做：
 
