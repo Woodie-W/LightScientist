@@ -12,8 +12,8 @@ from pydantic import ConfigDict, Field
 from esnext.cli import main, repl
 from esnext.manager import StageManager
 from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
-from esnext.models import RuntimeTask, StageRequest
-from esnext.runtime import RuntimeSupervisor, RuntimeUpdate
+from esnext.data_models import RuntimeTask, RuntimeUpdate, StageRequest
+from esnext.runtime import RuntimeSupervisor
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -35,10 +35,11 @@ class ScriptedChatModel(BaseChatModel):
     def _generate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs):
         trace = self.trace
         trace.step_count += 1
+        trace.action_count += 1
         step = trace.step_count
         trace.messages = [m for msg in messages if (m := self._to_msg(msg))]
         if self.status_cb:
-            self.status_cb("running", f"Step {step}: querying model.")
+            self.status_cb(RuntimeUpdate("running", f"Step {step}: querying model.", trace.progress.snapshot()))
         is_supervisor = self.role == "supervisor" or any(
             isinstance(msg, SystemMessage) and "second-layer supervisor" in str(msg.content).lower() for msg in messages
         )
@@ -70,7 +71,7 @@ class ScriptedChatModel(BaseChatModel):
         trace.status, trace.final_output = _status_from_output(raw.removeprefix("answer:").strip())
         log_step(self.log_path, f"step-{step}-final-answer", trace.final_output)
         if self.status_cb:
-            self.status_cb(trace.status, f"Step {step}: {trace.final_output or trace.status}.")
+            self.status_cb(RuntimeUpdate(trace.status, f"Step {step}: {trace.final_output or trace.status}.", trace.progress.snapshot()))
         log_step(self.log_path, "run-end", f"status: {trace.status}\nstep: {step}\nmessage: {trace.final_output}")
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=trace.final_output))])
 
@@ -141,7 +142,8 @@ def test_runtime_supervisor_tracks_agent_records(tmp_path: Path, monkeypatch) ->
 def test_stage_manager_builds_default_output_path(tmp_path: Path, monkeypatch) -> None:
     manager = make_agent_manager(monkeypatch, tmp_path, "answer: Done.")
     result = manager.handle(StageRequest(target="Try and stop cleanly.", output_path=None, workspace_root=tmp_path, use_agent=True))
-    assert result.output_path == tmp_path / "agent-run.md"
+    assert result.output_path.name == "agent-run.md"
+    assert result.output_path.parent.name.startswith("agent-")
 
 
 def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -151,7 +153,7 @@ def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "output:" in captured.out
-    assert (tmp_path / "agent-run.md").exists()
+    assert any(tmp_path.glob("agent-*/agent-run.md"))
 
 
 def test_repl_runs_until_quit(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -163,7 +165,7 @@ def test_repl_runs_until_quit(tmp_path: Path, capsys, monkeypatch) -> None:
     assert exit_code == 0
     assert "LightScientist REPL" in captured.out
     assert "status: completed" in captured.out
-    assert (tmp_path / "agent-run.md").exists()
+    assert any(tmp_path.glob("agent-*/agent-run.md"))
 
 
 def test_minimal_agent_run_handles_command_and_final_answer(tmp_path: Path) -> None:
@@ -181,6 +183,7 @@ def test_minimal_agent_run_handles_command_and_final_answer(tmp_path: Path) -> N
         result = run_agent("Say hello", cwd=tmp_path, max_steps=4)
     assert result.status == "completed"
     assert result.step_count == 2
+    assert result.action_count == 3
     assert "hello from agent" in "".join(result.command_outputs)
     log_text = (tmp_path / "agent-debug.log").read_text(encoding="utf-8")
     assert "[step-1-model-output]" in log_text
@@ -230,6 +233,8 @@ def test_runtime_supervisor_can_resume_agent(tmp_path: Path, monkeypatch) -> Non
     assert start.status == "completed"
     assert resumed.status == "completed"
     assert supervisor._agents[agent_id].thread_id
+    assert supervisor._agents[agent_id].workspace_root == tmp_path / agent_id
+    assert supervisor._agents[agent_id].output_path == tmp_path / agent_id / "agent-run.md"
 
 
 def test_minimal_agent_run_can_suspend_waiting(tmp_path: Path) -> None:
@@ -257,6 +262,7 @@ def test_runtime_supervisor_preserves_waiting_status(tmp_path: Path, monkeypatch
     agent = next(iter(manager.runtime_supervisor._agents.values()))
     assert result.status == "waiting"
     assert result.summary == "请补充数据集路径。"
+    assert result.output_path.parent.name == agent.agent_id
     assert agent.status == "waiting"
     assert agent.resume_mode == "interrupt"
     assert agent.progress_text == "请补充数据集路径。"
@@ -289,6 +295,7 @@ def test_background_session_can_resume_with_message(tmp_path: Path, monkeypatch)
     resumed = supervisor.resume(agent.agent_id, "实验结果已经回来了。")
     assert resumed.status == "completed"
     assert agent.pending_text == ""
+    assert first.output_path == tmp_path / agent.agent_id / "agent-run.md"
 
 
 def test_stage_manager_agent_goal_flow(tmp_path: Path, monkeypatch) -> None:
@@ -298,8 +305,9 @@ def test_stage_manager_agent_goal_flow(tmp_path: Path, monkeypatch) -> None:
         StageRequest(target="Try and stop cleanly.", output_path=output, workspace_root=tmp_path, use_agent=True)
     )
     assert result.status == "completed"
-    assert output.exists()
-    content = output.read_text(encoding="utf-8")
+    assert result.output_path.exists()
+    assert result.output_path.parent.name.startswith("agent-")
+    content = result.output_path.read_text(encoding="utf-8")
     assert "Status: `completed`" in content
 
 
@@ -337,10 +345,30 @@ def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> No
 
 
 def test_runtime_supervisor_does_not_forward_running_progress(tmp_path: Path) -> None:
-    from esnext.models import AgentRecord
+    from esnext.data_models import AgentProgress, AgentRecord
 
     supervisor = RuntimeSupervisor()
     agent_id = "agent-progress"
     supervisor._agents[agent_id] = AgentRecord(agent_id, "progress", "objective", "running")
-    supervisor._handle_update(agent_id, RuntimeUpdate("running", "Step 1"))
+    supervisor._handle_update(agent_id, RuntimeUpdate("running", "Step 1", AgentProgress(1, 2, 3.0)))
+    assert supervisor._agents[agent_id].progress.step_count == 1
+    assert supervisor._agents[agent_id].progress.action_count == 2
     assert not supervisor._supervisor_queue
+
+
+def test_runtime_supervisor_reports_stall_once_and_clears_on_progress(tmp_path: Path) -> None:
+    from esnext.data_models import AgentProgress, AgentRecord
+
+    supervisor = RuntimeSupervisor(stall_timeout=0.01)
+    agent_id = "agent-stall"
+    old_progress = AgentProgress(step_count=1, action_count=2, last_activity_at=time.monotonic() - 1)
+    supervisor._agents[agent_id] = AgentRecord(agent_id, "stall", "objective", "running", progress=old_progress)
+    with supervisor._queue_ready:
+        supervisor._check_worker_stalls_locked()
+        supervisor._check_worker_stalls_locked()
+        assert supervisor._agents[agent_id].stall_reported
+        assert len(supervisor._supervisor_queue) == 1
+        supervisor._agents[agent_id].progress = AgentProgress(step_count=1, action_count=3)
+        supervisor._check_worker_stalls_locked()
+        assert not supervisor._agents[agent_id].stall_reported
+        assert len(supervisor._supervisor_queue) == 1

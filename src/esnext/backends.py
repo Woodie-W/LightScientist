@@ -94,6 +94,7 @@ class LoggingWorkspaceBackend(WorkspaceBackend):
 
     def _log_backend_output(self, name: str, output: Any) -> None:
         body = output if isinstance(output, str) else str(output)
+        self.trace.action_count += 1
         self.trace.command_outputs.append(f"[{name}]\n{body}")
         log_step(self.log_path, f"step-{self.trace.step_count}-{name}-output", body)
 

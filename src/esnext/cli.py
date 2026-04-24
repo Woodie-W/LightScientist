@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .manager import StageManager
-from .models import ExecutionResult, StageRequest
+from .data_models import ExecutionResult, StageRequest
 
 OK_STATES = {"completed", "waiting", "background"}
 

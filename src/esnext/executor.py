@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Callable
 
 from .minimal_agent import AgentRunResult, AgentSession, resume_agent_session, start_agent_session
-from .models import ExecutionResult, RuntimeTask
+from .data_models import ExecutionResult, RuntimeTask, RuntimeUpdate
 
-StatusCallback = Callable[[str, str], None]
+StatusCallback = Callable[[RuntimeUpdate], None]
 
 
 @dataclass(slots=True)
@@ -67,12 +67,12 @@ class ExecutionRuntime:
     ) -> ExecutionResult:
         status = self._agent_status(r.status)
         resume_mode = self._resume_mode(status)
-        notes = [f"Minimal agent steps: {r.step_count}", f"Session ID: {r.session_id}", f"Thread ID: {r.thread_id}", f"Resume mode: {resume_mode}", f"Log: {log_path}"]
+        notes = [f"Minimal agent steps: {r.step_count}", f"Minimal agent actions: {r.action_count}", f"Session ID: {r.session_id}", f"Thread ID: {r.thread_id}", f"Resume mode: {resume_mode}", f"Log: {log_path}"]
         pending = status in {"waiting", "background"} and r.final_output
         if pending:
             notes.insert(-1, f"Pending text: {r.final_output}")
         header = [
-            "# Agent Goal Run", "", f"- Stage: `{stage_name}`", f"- Status: `{status}`", f"- Steps: {r.step_count}",
+            "# Agent Goal Run", "", f"- Stage: `{stage_name}`", f"- Status: `{status}`", f"- Steps: {r.step_count}", f"- Actions: {r.action_count}",
             f"- Session ID: `{r.session_id}`", f"- Thread ID: `{r.thread_id}`",
             f"- Resume mode: `{resume_mode}`",
         ]
@@ -91,18 +91,14 @@ class ExecutionRuntime:
         return ExecutionResult(task_id, status, summary, output_path, artifacts=[output_path, log_path], notes=notes)
 
     def _agent_status(self, status: str) -> str:
-        if status in {"completed", "waiting", "background", "cancelled"}:
-            return status
-        if status == "max_steps_reached":
-            return "failed"
-        return "failed"
+        return status if status in {"completed", "waiting", "background", "cancelled"} else "failed"
 
     def _resume_mode(self, status: str) -> str:
         return "interrupt" if status == "waiting" else "message"
 
     def _emit(self, status_cb: StatusCallback | None, status: str, text: str) -> None:
         if status_cb:
-            status_cb(status, text)
+            status_cb(RuntimeUpdate(status, text))
 
 
 # Backward-compatible alias for the earlier two-layer skeleton.

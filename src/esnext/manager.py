@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .executor import ExecutionResult
-from .models import RuntimeTask, StageRequest
+from .data_models import RuntimeTask, StageRequest
 from .runtime import RuntimeSupervisor
 
 
