@@ -12,7 +12,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from .backends import LoggingWorkspaceBackend, ask_input, log_step, suspend_background
-from .data_models import AgentProgress, RuntimeUpdate
+from .data_models import AgentProgress, AgentSessionInfo, HasAgentProgress, HasAgentSessionInfo, RuntimeUpdate
 from .model_config import MODEL, build_chat_model
 
 SYS = (
@@ -27,12 +27,11 @@ SYS = (
 
 
 @dataclass(slots=True)
-class AgentRunResult:
+class AgentRunResult(HasAgentSessionInfo, HasAgentProgress):
     """Final result for one start/resume cycle of a third-layer session."""
 
     status: Literal["completed", "failed", "max_steps_reached", "running", "waiting", "background", "cancelled"]
-    session_id: str
-    thread_id: str
+    info: AgentSessionInfo
     messages: list[dict[str, str]]
     last_model_output: str = ""  # Raw last assistant output before result normalization.
     last_action: str = ""  # Normalized last tool/action summary, such as execute or ask_input.
@@ -41,19 +40,26 @@ class AgentRunResult:
     error: str = ""
     command_outputs: list[str] = field(default_factory=list)  # Logged workspace-tool outputs.
 
-    @property
-    def step_count(self) -> int:
-        return self.progress.step_count
-
-    @property
-    def action_count(self) -> int:
-        return self.progress.action_count
+    @classmethod
+    def from_trace(cls, trace: "RunTrace", status: str, final_output: str | None = None) -> "AgentRunResult":
+        return cls(
+            status,
+            trace.info.snapshot(),
+            trace.messages,
+            trace.last_model_output,
+            trace.last_action,
+            trace.final_output if final_output is None else final_output,
+            trace.progress.snapshot(),
+            trace.error,
+            trace.command_outputs,
+        )
 
 
 @dataclass(slots=True)
-class RunTrace:
+class RunTrace(HasAgentSessionInfo, HasAgentProgress):
     """Mutable trace collected during one start/resume cycle."""
 
+    info: AgentSessionInfo
     status: Literal["running", "waiting", "background", "completed", "failed"] = "running"
     progress: AgentProgress = field(default_factory=AgentProgress)
     last_model_output: str = ""
@@ -64,32 +70,9 @@ class RunTrace:
     command_outputs: list[str] = field(default_factory=list)
     messages: list[dict[str, str]] = field(default_factory=list)
 
-    @property
-    def step_count(self) -> int:
-        return self.progress.step_count
-
-    @step_count.setter
-    def step_count(self, value: int) -> None:
-        self.progress.step_count = value
-
-    @property
-    def action_count(self) -> int:
-        return self.progress.action_count
-
-    @action_count.setter
-    def action_count(self, value: int) -> None:
-        self.progress.action_count = value
-        self.progress.last_activity_at = time.monotonic()
-
-
 @dataclass(slots=True)
-class AgentSession:
-    session_id: str
-    thread_id: str
-    cwd: Path
-    log_path: Path
-    model: str
-    max_steps: int
+class AgentSession(HasAgentSessionInfo):
+    info: AgentSessionInfo
     system_prompt: str
     checkpointer: MemorySaver
     tools: list[Any] = field(default_factory=list)
@@ -103,7 +86,8 @@ def start_agent_session(
 ) -> AgentSession:
     wd = Path(cwd).resolve() if cwd else Path.cwd()
     lp = Path(log_path).resolve() if log_path else (wd / "agent-debug.log")
-    session = AgentSession(uuid.uuid4().hex[:8], uuid.uuid4().hex[:8], wd, lp, model, max_steps, system_prompt, MemorySaver(), list(tools or []))
+    info = AgentSessionInfo(uuid.uuid4().hex[:8], uuid.uuid4().hex[:8], wd, lp, model, max_steps)
+    session = AgentSession(info, system_prompt, MemorySaver(), list(tools or []))
     session.last_result = resume_agent_session(session, goal, status_cb=status_cb, start=True)
     return session
 
@@ -111,7 +95,7 @@ def start_agent_session(
 def resume_agent_session(
     session: AgentSession, user_input: str, *, status_cb: Callable[[RuntimeUpdate], None] | None = None, start: bool = False,
 ) -> AgentRunResult:
-    trace = RunTrace()
+    trace = RunTrace(session.info.snapshot())
     is_waiting_resume = bool(not start and session.resume_mode == "interrupt" and session.last_result and session.last_result.status == "waiting")
     phase = "run-start" if start else "resume-start"
     log_step(session.log_path, phase, f"session_id: {session.session_id}\nthread_id: {session.thread_id}\ninput: {user_input}\nmodel: {session.model}\nmax_steps: {session.max_steps}\ncwd: {session.cwd}")
@@ -132,7 +116,7 @@ def resume_agent_session(
     except Exception as e:
         trace.status, trace.error = "failed", str(e)
         log_step(session.log_path, "run-end", f"status: failed\nstep: {trace.step_count}\nmessage: {e}")
-        session.last_result = AgentRunResult("failed", session.session_id, session.thread_id, trace.messages, trace.last_model_output, trace.last_action, trace.final_output, trace.progress.snapshot(), str(e), trace.command_outputs)
+        session.last_result = AgentRunResult.from_trace(trace, "failed")
         return session.last_result
     waiting = _waiting_from_result(result)
     waiting_via_interrupt = bool(waiting)
@@ -155,7 +139,7 @@ def resume_agent_session(
         session.resume_mode = "message"
     final = trace.final_output or _final_from_result(result)
     status = "max_steps_reached" if trace.max_steps_reached else trace.status
-    session.last_result = AgentRunResult(status, session.session_id, session.thread_id, trace.messages, trace.last_model_output, trace.last_action, final, trace.progress.snapshot(), trace.error, trace.command_outputs)
+    session.last_result = AgentRunResult.from_trace(trace, status, final)
     return session.last_result
 
 
@@ -203,7 +187,7 @@ def run_agent(
     status_cb: Callable[[RuntimeUpdate], None] | None = None, log_path: str | Path | None = None,
 ) -> AgentRunResult:
     session = start_agent_session(goal, cwd=cwd, model=model, max_steps=max_steps, system_prompt=system_prompt, status_cb=status_cb, log_path=log_path)
-    return session.last_result or AgentRunResult("failed", session.session_id, session.thread_id, [], error="Agent session did not return a result.")
+    return session.last_result or AgentRunResult("failed", session.info.snapshot(), [], error="Agent session did not return a result.")
 
 def cli_main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv

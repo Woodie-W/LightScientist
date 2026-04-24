@@ -58,7 +58,7 @@ class ExecutionRuntime:
             self._emit(status_cb, "failed", f"Minimal agent failed: {e}")
             return ExecutionResult(task.task_id, "failed", f"Minimal agent failed: {e}", task.output_path)
         self._agents[agent_id] = AgentHandle(session, task.task_id, task.stage_name, task.output_path)
-        r = session.last_result or AgentRunResult("failed", session.session_id, session.thread_id, [], error="Agent session did not return a result.")
+        r = session.last_result or AgentRunResult("failed", session.info.snapshot(), [], error="Agent session did not return a result.")
         return self._write_result(task.task_id, task.stage_name, task.output_path, log_path, r, status_cb)
 
     def _write_result(

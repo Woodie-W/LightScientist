@@ -66,6 +66,51 @@ class AgentProgress:
 
 
 @dataclass(slots=True)
+class AgentSessionInfo:
+    """Value object for third-layer session metadata."""
+
+    session_id: str
+    thread_id: str
+    cwd: Path
+    log_path: Path
+    model: str
+    max_steps: int
+
+    def snapshot(self) -> "AgentSessionInfo":
+        return AgentSessionInfo(self.session_id, self.thread_id, self.cwd, self.log_path, self.model, self.max_steps)
+
+
+class HasAgentSessionInfo:
+    info: AgentSessionInfo
+
+    def __getattr__(self, name: str) -> object:
+        if name in {"session_id", "thread_id", "cwd", "log_path", "model", "max_steps"}:
+            return getattr(self.info, name)
+        return super().__getattr__(name)  # type: ignore[misc]
+
+
+class HasAgentProgress:
+    progress: AgentProgress
+
+    def __getattr__(self, name: str) -> object:
+        if name in {"step_count", "action_count", "last_activity_at"}:
+            return getattr(self.progress, name)
+        raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in {"step_count", "action_count", "last_activity_at"}:
+            try:
+                progress = object.__getattribute__(self, "progress")
+            except AttributeError:
+                progress = None
+            if progress is not None:
+                setattr(progress, name, value)
+                if name == "action_count": progress.last_activity_at = time.monotonic()
+                return
+        super().__setattr__(name, value)
+
+
+@dataclass(slots=True)
 class RuntimeUpdate:
     """Unified status update passed from lower layers into RuntimeSupervisor."""
 
