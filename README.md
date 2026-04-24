@@ -17,6 +17,7 @@
 - 支持 `start_agent_session(...)`
 - 支持 `resume_agent_session(...)`
 - 第二层会保留第三层 session 引用
+- 每轮运行会维护 `step_count` / `action_count` / `last_activity_at`
 
 当前第三层状态只有：
 
@@ -42,6 +43,7 @@
   - 通过 `suspend_background(note)` 工具返回挂起状态
   - 后续恢复走同一个 `thread_id` 的普通消息继续
   - 第二层记录的 `resume_mode` 是 `message`
+  - supervisor 可以通过 `schedule_worker_resume(agent_id, seconds, message)` 设置未来直接唤醒
 
 worker prompt 约束：
 
@@ -49,6 +51,31 @@ worker prompt 约束：
 - `ask_input` 的问题应简短且具体
 - 只有在已经启动了一个需要未来外部结果的工作时，才使用 `suspend_background`
 - 正常还能继续推进的工作，不要用 `suspend_background`
+
+## 当前第二层
+
+第二层现在是 `RuntimeSupervisor`：
+
+- 一个二层只监督一个任务
+- 每个任务下面可以有多个第三层 worker
+- 每个 worker 有独立工作目录和 `agent-run.md`
+- worker 状态变化会进入 supervisor 队列
+- 普通 `running -> running` 进度只更新记录，不触发 supervisor 决策
+- supervisor 空闲时，每次只处理队列中的一个事件
+
+supervisor agent 复用第三层 deepagent 运行方式，但使用 supervisor prompt 和 runtime tools。
+
+当前 runtime tools：
+
+- `get_task()`
+- `list_workers()`
+- `get_worker(agent_id)`
+- `start_worker(objective)`
+- `resume_worker(agent_id, text)`
+- `cancel_worker(agent_id)`
+- `schedule_worker_resume(agent_id, seconds, message)`
+
+`schedule_worker_resume` 的含义是：当前 supervisor 先做决定，写好未来要发给 worker 的文本；到时间后第二层直接 resume 对应 worker，不再先问 supervisor。
 
 ## 结果字段语义
 
@@ -69,6 +96,19 @@ worker prompt 约束：
 - 第三层 session 不落磁盘
 - 第二层持有第三层 session
 - 进程结束后会话丢失
+
+## 进度和卡死检测
+
+第三层通过 `RuntimeUpdate` 向第二层上传状态和进度：
+
+- `step_count`
+  第三层大模型轮次计数
+- `action_count`
+  模型生成和工具调用都会增加
+- `last_activity_at`
+  最近一次 action 更新时间
+
+第二层只对 `running` worker 做简单卡死检测。`waiting` 和 `background` 是主动挂起状态，不按卡死处理。
 
 ## 当前顶层边界
 
@@ -106,18 +146,21 @@ PYTHONPATH=src python -m esnext run "你的工作目录是什么" --agent
 
 ```bash
 cd /data/auto-research/LightScientist
-conda run -n auto-research pytest -q
+conda run -n auto-research python -m pytest -q
 ```
 
 ## 当前核心文件
 
 ```text
 src/esnext/
+├── backends.py
 ├── cli.py
+├── data_models.py
 ├── executor.py
 ├── manager.py
 ├── minimal_agent.py
-├── models.py
+├── model_config.py
+├── prompts/
 └── runtime.py
 ```
 
@@ -133,8 +176,14 @@ src/esnext/
   第三层外层封装
 - `minimal_agent.py`
   第三层 deepagent 会话本体
-- `models.py`
+- `backends.py`
+  workspace backend 和自定义工具
+- `model_config.py`
+  OpenAI 兼容模型配置和日志包装
+- `data_models.py`
   共享结构定义
+- `prompts/`
+  worker / supervisor prompt
 
 ## 当前完成度
 
@@ -145,11 +194,13 @@ src/esnext/
 - `thread_id` / `start` / `resume`
 - `waiting -> interrupt`
 - `background -> 保留 session 后续普通恢复`
-- 第二层记录 `resume_mode`
+- 第二层 supervisor agent
+- 第二层 runtime tools
+- `background` 定时直接恢复
+- 简单进度计数和 running 卡死检测
 
 还没做：
 
 - 磁盘持久化
 - 顶层 resume 功能
-- 自动后台任务回流
 - 第一层真正的 LangGraph 化

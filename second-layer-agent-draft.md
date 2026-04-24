@@ -10,7 +10,7 @@ It should:
 
 - watch third-layer worker status changes
 - decide whether the overall task is completed
-- decide whether to wait, resume a worker, or start another worker
+- decide whether to wait, resume, start, cancel, or schedule a worker
 - inspect worker artifacts, logs, and workspace files when needed
 
 It should not replace the third layer as the main execution layer.
@@ -118,12 +118,12 @@ Minimal exposed functions:
 - `get_worker(agent_id)`
 - `start_worker(objective)`
 - `resume_worker(agent_id, text)`
-
-If later needed:
-
-- `cancel(agent_id)`
+- `cancel_worker(agent_id)`
+- `schedule_worker_resume(agent_id, seconds, message)`
 
 No new action class hierarchy is needed.
+
+`schedule_worker_resume(...)` is for background workers. The supervisor decides now, writes the exact future message, and the runtime sends that message directly to the worker when the delay expires.
 
 ## Control Model
 
@@ -133,6 +133,7 @@ The second-layer controller remains responsible for:
 - updating shared records
 - enqueueing worker events
 - forwarding events to the supervisor agent only when the supervisor is idle
+- scheduling future direct worker resumes
 
 The second-layer agent is responsible for:
 
@@ -147,7 +148,9 @@ So the flow becomes:
 5. if the supervisor agent is idle, the controller pops one event and forwards it
 6. if the supervisor agent is busy, events remain queued
 7. supervisor agent queries status if needed
-8. supervisor agent calls `resume_worker(...)`, `start_worker(...)`, or does nothing
+8. supervisor agent calls runtime tools or does nothing
+
+Ordinary `running -> running` progress updates only refresh the worker record. They do not enter the supervisor queue. Status transitions, final results, cancellation, and stall events can enter the supervisor queue.
 
 ## Prompt Direction
 
@@ -158,6 +161,8 @@ The supervisor agent prompt should emphasize:
 - prefer reusing existing workers before starting new ones
 - only start a new worker when no existing worker is suitable, or parallel exploration is clearly useful
 - only cancel a worker when it is no longer useful
+- for `background`, do not immediately resume unless there is concrete new information
+- for `background`, use `schedule_worker_resume(...)` when the worker should be woken later with a known message
 - inspect state before making decisions
 - inspect artifacts/logs/files when needed with the built-in workspace tools
 - only declare completion when the overall task objective is satisfied
@@ -173,6 +178,8 @@ It only needs to support:
 - reading artifacts/logs/files with the built-in workspace tools
 - resuming a worker
 - starting a new worker if needed
+- cancelling a worker
+- scheduling a future direct resume for a background worker
 - deciding whether the task is complete
 
 It does not need:
@@ -208,6 +215,15 @@ The second layer uses these statuses for supervision and resume behavior:
 
 - `waiting` resumes through interrupt resume
 - `background` resumes through normal message resume
+- `background` can also be resumed later by a scheduled direct message
+
+Progress fields:
+
+- `step_count`: model-turn count
+- `action_count`: model generation and tool-call activity count
+- `last_activity_at`: latest action timestamp
+
+Only `running` workers are checked for stalls. `waiting` and `background` are intentional blocking states and should not be treated as stalled.
 
 Worker prompt constraints:
 
