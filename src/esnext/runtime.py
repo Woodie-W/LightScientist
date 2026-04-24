@@ -276,7 +276,6 @@ class RuntimeSupervisor:
         record.status = update.status
         record.resume_mode = "interrupt" if update.status == "waiting" else "message"
         record.progress_text = update.text
-        record.pending_text = update.text if update.status in {"waiting", "background"} else ""
         if update.progress: record.progress = update.progress.snapshot()
         if update.status != "running": record.stall_reported, record.stalled_action_count = False, -1
         if update.thread_id: record.thread_id = update.thread_id

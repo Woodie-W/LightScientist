@@ -133,12 +133,15 @@ class AgentRecord:
     resume_mode: ResumeMode = "message"
     progress: AgentProgress = field(default_factory=AgentProgress)
     progress_text: str = ""  # Latest status text from the worker.
-    pending_text: str = ""  # Waiting question or background note when the worker is suspended.
     stall_reported: bool = False
     stalled_action_count: int = -1
     workspace_root: Path | None = None
     output_path: Path | None = None
     result: ExecutionResult | None = None  # Final execution result once a worker round finishes.
+
+    @property
+    def pending_text(self) -> str:
+        return self.progress_text if self.status in {"waiting", "background"} else ""
 
     def to_dict(self) -> dict[str, object]:
         return {
