@@ -138,14 +138,37 @@ class LoggingWorkspaceBackend(WorkspaceBackend):
 # ---------------------------------------------------------------
 # 自定义工具
 # ---------------------------------------------------------------
-@tool
+@tool(parse_docstring=True)
 def ask_input(question: str) -> str:
-    """Ask the upper layer for more input and pause the graph."""
+    """Ask the upper layer for required input and pause this worker.
+
+    Use this only when the task cannot continue without a specific external
+    answer that is not available from the workspace or tools. The question
+    should be short and concrete.
+
+    Args:
+        question: The exact question to send to the upper layer.
+
+    Returns:
+        The answer provided when the worker is resumed.
+    """
     response = interrupt({"type": "waiting", "question": question})
     return str(response or "")
 
 
-@tool
+@tool(parse_docstring=True)
 def suspend_background(note: str) -> str:
-    """Finish this round as background work that should continue later."""
+    """Suspend this worker because progress depends on future external work.
+
+    Use this after starting or handing off work that must continue outside the
+    current model turn, such as a long-running experiment. Do not use it for
+    normal work that can continue immediately.
+
+    Args:
+        note: A concise status note explaining what is running or pending and
+            what should be checked later.
+
+    Returns:
+        The background status note.
+    """
     return note

@@ -10,6 +10,7 @@ from pathlib import Path
 from .executor import ExecutionRuntime
 from .minimal_agent import AgentSession, resume_agent_session, start_agent_session
 from .data_models import AgentRecord, ExecutionResult, RuntimeTask, RuntimeUpdate
+from .prompts import load_prompt
 
 
 @dataclass(slots=True)
@@ -17,18 +18,24 @@ class RuntimeEnvelope:
     agent_id: str
     update: RuntimeUpdate
 
-SUPERVISOR_SYS = (
-    "You are the second-layer supervisor. Supervise one task and its worker agents. "
-    "Use the built-in workspace tools when you need to inspect files, outputs, logs, or edit working files. "
-    "Use the runtime tools to inspect task state, inspect worker state, start workers, resume workers, and cancel workers when needed. "
-    "On each new event, first inspect the current task and worker states before making a decision. "
-    "Do not start a new worker if an existing worker can be resumed to make progress. "
-    "Use cancel_worker only when a worker is no longer useful for the task. "
-    "Reply with exactly one line starting with TASK_COMPLETED:, TASK_FAILED:, or TASK_CONTINUE:. "
-    "When the overall task is complete, answer with 'TASK_COMPLETED: <summary>'. "
-    "When the task cannot continue, answer with 'TASK_FAILED: <summary>'. "
-    "Otherwise answer with 'TASK_CONTINUE: <summary>'."
-)
+
+@dataclass(slots=True)
+class ScheduledResume:
+    agent_id: str
+    due_at: float
+    message: str
+
+
+def supervisor_prompt_for(event: str) -> str:
+    prompt = load_prompt("supervisor")
+    for line in event.splitlines():
+        if line.strip().lower() == "status: background":
+            return f"{prompt}\n\n{load_prompt('supervisor_background')}"
+        if line.strip().lower() == "status: waiting":
+            return f"{prompt}\n\n{load_prompt('supervisor_waiting')}"
+    if "worker stalled" in event.lower():
+        return f"{prompt}\n\n{load_prompt('supervisor_stalled')}"
+    return prompt
 
 
 class RuntimeSupervisor:
@@ -46,10 +53,14 @@ class RuntimeSupervisor:
         self._lock = threading.Lock()
         self._queue: deque[RuntimeEnvelope] = deque()
         self._supervisor_queue: deque[str] = deque()
+        self._scheduled_resumes: list[ScheduledResume] = []
         self._queue_ready = threading.Condition(self._lock)
         self._controller = threading.Thread(target=self._control_loop, daemon=True, name="runtime-controller")
         self._controller.start()
 
+    # ---------------------------------------------------------------
+    # 提供接口
+    # ---------------------------------------------------------------
     def start(self, task: RuntimeTask) -> ExecutionResult:
         with self._lock:
             if self._task and self._task["task_id"] != task.task_id: 
@@ -124,6 +135,9 @@ class RuntimeSupervisor:
             "summary": self._task["summary"],
         }
 
+    # ---------------------------------------------------------------
+    # Worker 运行控制
+    # ---------------------------------------------------------------
     def _run(self, mode: str, agent_id: str, arg: RuntimeTask | str) -> None:
         try:
             if mode == "start":
@@ -153,6 +167,7 @@ class RuntimeSupervisor:
                 while not self._queue and not (self._supervisor_queue and not self._supervisor_busy):
                     self._queue_ready.wait(timeout=0.5)
                     self._check_worker_stalls_locked()
+                    self._resume_due_workers_locked()
                 item = self._queue.popleft() if self._queue else None
                 supervisor = None if item or self._supervisor_busy or not self._supervisor_queue else self._supervisor_queue.popleft()
             if item:
@@ -181,6 +196,9 @@ class RuntimeSupervisor:
                 self._queue_ready.notify()
         if update.result and agent_id in self._waiters: self._waiters[agent_id].set()
 
+    # ---------------------------------------------------------------
+    # Supervisor Agent
+    # ---------------------------------------------------------------
     def _run_supervisor(self, text: str) -> None:
         try:
             task = self._task
@@ -190,7 +208,7 @@ class RuntimeSupervisor:
                 session = start_agent_session(
                     f"Task objective: {task['objective']}\nEvent: {text}",
                     cwd=self._workspace_root or Path.cwd(),
-                    system_prompt=SUPERVISOR_SYS,
+                    system_prompt=supervisor_prompt_for(text),
                     log_path=(self._workspace_root or Path.cwd()) / f"supervisor-{task['task_id']}.log",
                     tools=self._runtime_tools(),
                 )
@@ -203,6 +221,7 @@ class RuntimeSupervisor:
                 self._supervisor_busy = False
                 self._queue_ready.notify()
 
+    # Supervisor tools
     def _runtime_tools(self) -> list[object]:
         from langchain.tools import tool
 
@@ -210,47 +229,135 @@ class RuntimeSupervisor:
             agent = self._agents.get(agent_id)
             return agent.to_dict() if agent else {}
 
-        @tool("get_task")
+        @tool("get_task", parse_docstring=True)
         def get_task_tool() -> str:
-            """Get current task state."""
+            """Get the current supervised task state.
+
+            Use this before making supervisor decisions to understand the
+            overall task objective, status, and latest summary.
+
+            Returns:
+                JSON object with task_id, objective, status, and summary. Empty
+                JSON object if no task is active.
+            """
             if not self._task:
                 return json.dumps({}, ensure_ascii=False)
             return json.dumps(self.get_task(str(self._task["task_id"])) or {}, ensure_ascii=False)
 
-        @tool("list_workers")
+        @tool("list_workers", parse_docstring=True)
         def list_workers_tool() -> str:
-            """List worker records for the current task."""
+            """List all worker records under the current task.
+
+            Use this to see every worker managed by this supervisor, including
+            their status, progress, workspace path, output path, and pending text.
+
+            Returns:
+                JSON list of worker records for the active task.
+            """
             task = self._task or {}
             workers = [agent_dict(agent_id) for agent_id in task.get("worker_ids", [])]
             return json.dumps(workers, ensure_ascii=False)
 
-        @tool("get_worker")
+        @tool("get_worker", parse_docstring=True)
         def get_worker_tool(agent_id: str) -> str:
-            """Get one worker record by agent id."""
+            """Get one worker record by agent id.
+
+            Use this when an event names a specific worker and you need its
+            current status, progress, workspace path, output path, or pending text.
+
+            Args:
+                agent_id: Worker id such as "agent-task1".
+
+            Returns:
+                JSON object for the worker, or empty JSON object if not found.
+            """
             return json.dumps(agent_dict(agent_id), ensure_ascii=False)
 
-        @tool("resume_worker")
+        @tool("resume_worker", parse_docstring=True)
         def resume_worker_tool(agent_id: str, text: str) -> str:
-            """Resume a worker agent with new input."""
+            """Resume a worker immediately with new input.
+
+            Use this when a waiting or background worker can continue now. For a
+            background worker, include concrete new information from files, logs,
+            or external results when available.
+
+            Args:
+                agent_id: Worker id to resume.
+                text: Message to send to the worker as resume input.
+
+            Returns:
+                JSON object with the worker run status and summary.
+            """
             result = self.resume(agent_id, text)
             return json.dumps({"status": result.status, "summary": result.summary}, ensure_ascii=False)
 
-        @tool("start_worker")
+        @tool("start_worker", parse_docstring=True)
         def start_worker_tool(objective: str) -> str:
-            """Start a new worker under the current task."""
+            """Start a new worker under the current task.
+
+            Use this only when the existing workers cannot reasonably be resumed
+            to make progress or when parallel investigation is needed.
+
+            Args:
+                objective: Concrete objective for the new worker.
+
+            Returns:
+                JSON object with the worker start status, summary, and task_id.
+            """
             if not self._task: return json.dumps({"status": "failed", "summary": "No active task."}, ensure_ascii=False)
             task_id = str(self._task["task_id"])
             result = self.start_worker(task_id, objective)
             return json.dumps({"status": result.status, "summary": result.summary, "task_id": result.task_id}, ensure_ascii=False)
 
-        @tool("cancel_worker")
+        @tool("cancel_worker", parse_docstring=True)
         def cancel_worker_tool(agent_id: str) -> str:
-            """Cancel one worker by agent id."""
+            """Cancel one worker by agent id.
+
+            Use this when the worker is no longer useful, is superseded by
+            another worker, or should not be resumed.
+
+            Args:
+                agent_id: Worker id to cancel.
+
+            Returns:
+                JSON object with cancellation status and summary.
+            """
             result = self.cancel_worker(agent_id)
             return json.dumps({"status": result.status, "summary": result.summary}, ensure_ascii=False)
 
-        return [get_task_tool, list_workers_tool, get_worker_tool, resume_worker_tool, start_worker_tool, cancel_worker_tool]
+        @tool("schedule_worker_resume", parse_docstring=True)
+        def schedule_worker_resume_tool(agent_id: str, seconds: float, message: str) -> str:
+            """Schedule a future direct resume for one worker.
 
+            Use this after a background worker event when the supervisor wants
+            the runtime to wake the same worker later without another supervisor
+            decision. At the scheduled time, message is sent directly to the
+            worker as resume input.
+
+            Args:
+                agent_id: Worker id to resume later.
+                seconds: Delay in seconds before resuming the worker.
+                message: Exact text to send to the worker when the delay expires.
+
+            Returns:
+                JSON object showing whether the future resume was scheduled.
+            """
+            return self._schedule_worker_resume(agent_id, seconds, message)
+
+        return [
+            get_task_tool,
+            list_workers_tool,
+            get_worker_tool,
+            resume_worker_tool,
+            start_worker_tool,
+            cancel_worker_tool,
+            schedule_worker_resume_tool,
+        ]
+
+    # ---------------------------------------------------------------
+    # Supervisor 辅助函数
+    # ---------------------------------------------------------------
+	# Supervisor 结果
     def _apply_supervisor_result(self, text: str) -> None:
         task = self._task
         if not task: return
@@ -271,6 +378,7 @@ class RuntimeSupervisor:
         if raw and task["status"] not in {"completed", "failed", "cancelled"}:
             task["summary"] = raw
 
+    # Worker 状态
     def _update_agent(self, agent_id: str, update: RuntimeUpdate) -> None:
         record = self._agents[agent_id]
         record.status = update.status
@@ -281,6 +389,7 @@ class RuntimeSupervisor:
         if update.thread_id: record.thread_id = update.thread_id
         if update.result: record.result = update.result
 
+    # 卡死检测
     def _check_worker_stalls_locked(self) -> None:
         if self.stall_timeout is None: return
         now = time.monotonic()
@@ -301,6 +410,33 @@ class RuntimeSupervisor:
             )
         if self._supervisor_queue: self._queue_ready.notify()
 
+    # 定时恢复
+    def _schedule_worker_resume(self, agent_id: str, seconds: float, message: str) -> str:
+        with self._queue_ready:
+            if agent_id not in self._agents:
+                return json.dumps({"status": "failed", "summary": f"Unknown agent session: {agent_id}."}, ensure_ascii=False)
+            delay = max(0.0, float(seconds))
+            self._scheduled_resumes.append(ScheduledResume(agent_id, time.monotonic() + delay, message))
+            self._queue_ready.notify()
+            return json.dumps({"status": "scheduled", "agent_id": agent_id, "seconds": delay, "message": message}, ensure_ascii=False)
+
+    def _resume_due_workers_locked(self) -> None:
+        if not self._scheduled_resumes: return
+        now = time.monotonic()
+        pending: list[ScheduledResume] = []
+        for item in self._scheduled_resumes:
+            if item.due_at > now:
+                pending.append(item)
+                continue
+            record = self._agents.get(item.agent_id)
+            if not record or record.status in {"completed", "failed", "cancelled"}:
+                continue
+            self._waiters[item.agent_id] = threading.Event()
+            threading.Thread(target=self._run, args=("resume", item.agent_id, item.message), daemon=True, name=f"runtime-scheduled-resume-{item.agent_id}").start()
+        self._scheduled_resumes = pending
+
+
+    # 结果封装
     def _final_result(self, agent_id: str) -> ExecutionResult:
         record = self._agents[agent_id]
         result = record.result or ExecutionResult(record.task_id, record.status, record.progress_text or "No result.", record.output_path or (Path.cwd() / "agent-run.md"))

@@ -14,6 +14,8 @@ from esnext.manager import StageManager
 from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
 from esnext.data_models import RuntimeTask, RuntimeUpdate, StageRequest
 from esnext.runtime import RuntimeSupervisor
+from esnext.runtime import supervisor_prompt_for
+from esnext.prompts import load_prompt
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -372,3 +374,43 @@ def test_runtime_supervisor_reports_stall_once_and_clears_on_progress(tmp_path: 
         supervisor._check_worker_stalls_locked()
         assert not supervisor._agents[agent_id].stall_reported
         assert len(supervisor._supervisor_queue) == 1
+
+
+def test_runtime_supervisor_does_not_stall_blocked_workers(tmp_path: Path) -> None:
+    from esnext.data_models import AgentProgress, AgentRecord
+
+    supervisor = RuntimeSupervisor(stall_timeout=0.01)
+    old_progress = AgentProgress(step_count=1, action_count=2, last_activity_at=time.monotonic() - 1)
+    supervisor._agents["agent-waiting"] = AgentRecord("agent-waiting", "waiting", "objective", "waiting", progress=old_progress)
+    supervisor._agents["agent-background"] = AgentRecord("agent-background", "background", "objective", "background", progress=old_progress)
+    with supervisor._queue_ready:
+        supervisor._check_worker_stalls_locked()
+        assert not supervisor._agents["agent-waiting"].stall_reported
+        assert not supervisor._agents["agent-background"].stall_reported
+        assert not supervisor._supervisor_queue
+
+
+def test_runtime_supervisor_schedules_worker_resume(tmp_path: Path, monkeypatch) -> None:
+    from esnext.data_models import AgentRecord
+
+    calls = []
+    supervisor = RuntimeSupervisor()
+    agent_id = "agent-background"
+    supervisor._agents[agent_id] = AgentRecord(agent_id, "background", "objective", "background")
+    monkeypatch.setattr(supervisor, "_run", lambda mode, aid, arg: calls.append((mode, aid, arg)))
+    assert "scheduled" in supervisor._schedule_worker_resume(agent_id, 0, "请检查实验是否有进展。")
+    with supervisor._queue_ready:
+        supervisor._resume_due_workers_locked()
+        assert len(supervisor._scheduled_resumes) == 0
+    deadline = time.time() + 1
+    while time.time() < deadline and not calls:
+        time.sleep(0.01)
+    assert calls == [("resume", agent_id, "请检查实验是否有进展。")]
+
+
+def test_supervisor_prompt_adds_status_specific_guidance() -> None:
+    assert "intentional suspension" in supervisor_prompt_for("Worker: a\nStatus: background")
+    assert "schedule_worker_resume" in supervisor_prompt_for("Worker: a\nStatus: background")
+    assert "missing input" in supervisor_prompt_for("Worker: a\nStatus: waiting")
+    assert "not shown progress" in supervisor_prompt_for("Worker: a\nText: Worker stalled.")
+    assert "ask_input" in load_prompt("worker")
