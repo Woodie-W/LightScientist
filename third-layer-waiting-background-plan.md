@@ -32,7 +32,7 @@ Implementation:
 
 Implementation:
 
-1. The agent returns a normal answer prefixed with `BACKGROUND:`.
+1. The third-layer agent calls `suspend_background(note)`.
 2. The current graph run ends normally.
 3. The second layer stores the session as `background`.
 4. Later, the second layer resumes the same session by sending a new normal input on the same `thread_id`.
@@ -51,7 +51,7 @@ Delete the old `WAITING:` text protocol:
 - in-memory checkpointer
 - `start_agent_session(...)`
 - `resume_agent_session(...)`
-- `BACKGROUND:` light protocol
+- `suspend_background(note)`
 - current status set:
   - `running`
   - `waiting`

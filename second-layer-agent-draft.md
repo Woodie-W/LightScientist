@@ -213,8 +213,8 @@ Worker prompt constraints:
 
 - use `ask_input` only when progress truly depends on missing external input
 - keep `ask_input` questions short and concrete
-- use `BACKGROUND: ...` only after work has already been launched and the next useful step depends on a future external result
-- do not use `BACKGROUND` for ordinary work that can continue immediately
+- use `suspend_background(note)` only after work has already been launched and the next useful step depends on a future external result
+- do not use `suspend_background` for ordinary work that can continue immediately
 
 ## Summary
 

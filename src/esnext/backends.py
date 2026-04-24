@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from deepagents.backends import LocalShellBackend
+from langchain.tools import tool
+from langgraph.types import interrupt
 
+# ---------------------------------------------------------------
+# 基础配置
+# ---------------------------------------------------------------
 _SYSTEM_PATH_PREFIXES = (
     "/Users/",
     "/home/",
@@ -25,6 +30,9 @@ _SYSTEM_PATH_PREFIXES = (
 ENV = {"PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1"}
 
 
+# ---------------------------------------------------------------
+# 日志记录
+# ---------------------------------------------------------------
 def log_step(path: Path | None, title: str, body: str = "") -> None:
     if not path:
         return
@@ -48,6 +56,9 @@ def _convert_virtual_paths(command: str, workspace_name: str) -> str:
     return re.sub(r'(?<=\s)/[^\s;|&<>\'"`]*|^/[^\s;|&<>\'"`]*', replace, command)
 
 
+# ---------------------------------------------------------------
+# 官方工作区后端，增强
+# ---------------------------------------------------------------
 class WorkspaceBackend(LocalShellBackend):
     """Workspace-rooted backend with EvoScientist-style virtual path handling."""
 
@@ -120,3 +131,20 @@ class LoggingWorkspaceBackend(WorkspaceBackend):
         result = super().execute(command, timeout=timeout)
         self._log_backend_output("execute", result.output)
         return result
+
+
+
+# ---------------------------------------------------------------
+# 自定义工具
+# ---------------------------------------------------------------
+@tool
+def ask_input(question: str) -> str:
+    """Ask the upper layer for more input and pause the graph."""
+    response = interrupt({"type": "waiting", "question": question})
+    return str(response or "")
+
+
+@tool
+def suspend_background(note: str) -> str:
+    """Finish this round as background work that should continue later."""
+    return note

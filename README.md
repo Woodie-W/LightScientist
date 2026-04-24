@@ -39,7 +39,7 @@
 
 - `background`
   - 当前轮正常结束，但第三层 session 保留在内存
-  - 通过 `BACKGROUND: ...` 轻协议返回挂起状态
+  - 通过 `suspend_background(note)` 工具返回挂起状态
   - 后续恢复走同一个 `thread_id` 的普通消息继续
   - 第二层记录的 `resume_mode` 是 `message`
 
@@ -47,8 +47,8 @@ worker prompt 约束：
 
 - 只有在缺少明确的外部信息、并且无法通过 workspace/tools 自己获取时，才使用 `ask_input`
 - `ask_input` 的问题应简短且具体
-- 只有在已经启动了一个需要未来外部结果的工作时，才使用 `BACKGROUND: ...`
-- 正常还能继续推进的工作，不要用 `BACKGROUND`
+- 只有在已经启动了一个需要未来外部结果的工作时，才使用 `suspend_background`
+- 正常还能继续推进的工作，不要用 `suspend_background`
 
 ## 结果字段语义
 

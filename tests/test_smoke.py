@@ -59,6 +59,10 @@ class ScriptedChatModel(BaseChatModel):
                 trace.last_action = f"ask_input: {arg}"
                 log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
                 return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "ask_input", "args": {"question": arg}, "id": f"call_{step}", "type": "tool_call"}]))])
+            if name == "suspend_background":
+                trace.last_action = f"suspend_background: {arg}"
+                log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "suspend_background", "args": {"note": arg}, "id": f"call_{step}", "type": "tool_call"}]))])
             cmd = spec if not sep else arg
             trace.last_action = f"execute: {cmd}"
             log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
@@ -273,7 +277,7 @@ def test_waiting_session_can_resume_with_interrupt(tmp_path: Path, monkeypatch) 
 
 
 def test_background_session_can_resume_with_message(tmp_path: Path, monkeypatch) -> None:
-    patch_scripted_model(monkeypatch, "answer: BACKGROUND: 实验已启动。", "answer: 实验已完成。")
+    patch_scripted_model(monkeypatch, "tool: suspend_background|实验已启动。", "", "answer: 实验已完成。")
     supervisor = RuntimeSupervisor()
     first = supervisor.start(
         RuntimeTask("taskbg01", "interactive", "Run experiment", tmp_path / "agent.md", tmp_path, "Run experiment", True)
@@ -319,7 +323,7 @@ def test_runtime_supervisor_can_run_supervisor_agent(tmp_path: Path, monkeypatch
 
 
 def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> None:
-    patch_scripted_model(monkeypatch, "answer: BACKGROUND: 实验已启动。", scope_root=tmp_path)
+    patch_scripted_model(monkeypatch, "tool: suspend_background|实验已启动。", "", scope_root=tmp_path)
     supervisor = RuntimeSupervisor()
     supervisor.start(
         RuntimeTask("taskcancelw", "interactive", "Run experiment", tmp_path / "agent.md", tmp_path, "Run experiment", True)

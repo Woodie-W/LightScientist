@@ -7,12 +7,11 @@ from typing import Any, Callable, Literal
 
 from deepagents import create_deep_agent
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command, interrupt
-from langchain.tools import tool
+from langgraph.types import Command
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from .backends import LoggingWorkspaceBackend, log_step
+from .backends import LoggingWorkspaceBackend, ask_input, log_step, suspend_background
 from .model_config import MODEL, build_chat_model
 
 SYS = (
@@ -20,8 +19,8 @@ SYS = (
     "write_todos, read_todos, and task. "
     "Only call ask_input when the task cannot continue without a specific external answer that is not available from the workspace or tools. "
     "Keep the ask_input question short and concrete. "
-    "Only answer with 'BACKGROUND: <status>' after you have already started or handed off work that must continue later, and the next useful step depends on a future external result. "
-    "Do not use BACKGROUND for normal ongoing work that you can continue right now. "
+    "Only call suspend_background after you have already started or handed off work that must continue later, and the next useful step depends on a future external result. "
+    "Do not use suspend_background for normal ongoing work that you can continue right now. "
     "If the task is complete, answer directly with the final result."
 )
 
@@ -55,14 +54,6 @@ class RunTrace:
     max_steps_reached: bool = False
     command_outputs: list[str] = field(default_factory=list)
     messages: list[dict[str, str]] = field(default_factory=list)
-
-
-# 类似于 hooks
-@tool
-def ask_input(question: str) -> str:
-    """Ask the upper layer for more input and pause the graph."""
-    response = interrupt({"type": "waiting", "question": question})
-    return str(response or "")
 
 
 @dataclass(slots=True)
@@ -102,7 +93,7 @@ def resume_agent_session(
     agent = create_deep_agent(
         model=chat,
         system_prompt=session.system_prompt,
-        tools=[ask_input, *session.tools],
+        tools=[ask_input, suspend_background, *session.tools],
         backend=LoggingWorkspaceBackend(trace=trace, log_path=session.log_path, root_dir=session.cwd),
         subagents=[],
         middleware=(),
@@ -127,6 +118,13 @@ def resume_agent_session(
         log_step(session.log_path, "run-end", f"status: waiting\nstep: {trace.step_count}\nmessage: {waiting}")
         if status_cb:
             status_cb("waiting", waiting)
+    elif trace.last_action.startswith("suspend_background: "):
+        note = trace.last_action.removeprefix("suspend_background: ").strip()
+        session.resume_mode = "message"
+        trace.status, trace.final_output = "background", note
+        log_step(session.log_path, "run-end", f"status: background\nstep: {trace.step_count}\nmessage: {note}")
+        if status_cb:
+            status_cb("background", note)
     else:
         session.resume_mode = "message"
     final = trace.final_output or _final_from_result(result)
@@ -157,12 +155,8 @@ def _final_from_result(result: Any) -> str:
     return str(getattr(msgs[-1], "content", "") or "") if msgs else ""
 
 
-def _status_from_output(text: str) -> tuple[Literal["background", "completed"], str]:
-    raw = text.strip()
-    for prefix, status in (("BACKGROUND:", "background"),):
-        if raw.upper().startswith(prefix):
-            return status, raw[len(prefix) :].strip()
-    return "completed", raw
+def _status_from_output(text: str) -> tuple[Literal["completed"], str]:
+    return "completed", text.strip()
 
 
 def _waiting_from_result(result: Any) -> str:
