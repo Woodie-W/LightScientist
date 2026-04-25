@@ -302,7 +302,8 @@ class RuntimeSupervisor:
             Use this only when the existing workers cannot reasonably be resumed
             to make progress or when parallel investigation is needed. This
             tool returns immediately; the worker result will arrive later as a
-            supervisor event.
+            supervisor event. Avoid creating many parallel workers because API
+            concurrency is limited.
 
             Args:
                 objective: Concrete objective for the new worker.
@@ -322,7 +323,8 @@ class RuntimeSupervisor:
             """Cancel one worker by agent id.
 
             Use this when the worker is no longer useful, is superseded by
-            another worker, or should not be resumed.
+            another worker, or should not be resumed. If the worker may become
+            useful later, prefer schedule_worker_resume instead of cancelling it.
 
             Args:
                 agent_id: Worker id to cancel.
@@ -340,7 +342,8 @@ class RuntimeSupervisor:
             Use this after a background worker event when the supervisor wants
             the runtime to wake the same worker later without another supervisor
             decision. At the scheduled time, message is sent directly to the
-            worker as resume input.
+            worker as resume input. Prefer this over cancel_worker when a worker
+            is waiting for future external progress.
 
             Args:
                 agent_id: Worker id to resume later.

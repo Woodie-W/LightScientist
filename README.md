@@ -65,6 +65,8 @@ worker prompt 约束：
 - supervisor 空闲时，每次只处理队列中的一个事件
 - supervisor 调用 `start_worker` / `resume_worker` 是非阻塞发射，worker 结果之后再作为事件回流
 - 第二层用 `_results` 保存每个 worker 的交付结果
+- supervisor 约定优先复用已有 worker，少 cancel，少创建并行 worker
+- background/stalled worker 如果未来还可能有用，优先 `schedule_worker_resume`，不要直接 cancel
 
 supervisor agent 复用第三层 deepagent 运行方式，但使用 supervisor prompt 和 runtime tools。
 

@@ -160,7 +160,9 @@ The supervisor agent prompt should emphasize:
 - on each event, inspect current task/worker state first
 - prefer reusing existing workers before starting new ones
 - only start a new worker when no existing worker is suitable, or parallel exploration is clearly useful
-- only cancel a worker when it is no longer useful
+- avoid creating many parallel workers because API concurrency is limited
+- prefer scheduling a later resume over cancelling when the worker may still become useful
+- only cancel a worker when it is clearly no longer useful, superseded, or should never be resumed
 - for `background`, do not immediately resume unless there is concrete new information
 - for `background`, use `schedule_worker_resume(...)` when the worker should be woken later with a known message
 - inspect state before making decisions
