@@ -16,6 +16,8 @@ from esnext.executor import ExecutionRuntime
 from esnext.manager import StageManager
 from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
 from esnext.data_models import RuntimeTask, RuntimeUpdate, StageRequest, SupervisorEvent
+from esnext.research_controller import ResearchController
+from esnext.research_stages import STAGES, stage_spec
 from esnext.runtime import RuntimeSupervisor
 from esnext.runtime import supervisor_event_input
 from esnext.prompts import load_prompt
@@ -73,6 +75,16 @@ class ScriptedChatModel(BaseChatModel):
                 trace.last_action = f"finish_cancelled: {arg}"
                 log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
                 return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "finish_cancelled", "args": {"summary": arg}, "id": f"call_{step}", "type": "tool_call"}]))])
+            if name == "finish_stage":
+                status, summary, output, next_stage = (arg.split("|") + ["", "", "", ""])[:4]
+                trace.last_action = f"finish_stage: {status}"
+                log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "finish_stage", "args": {"status": status, "summary": summary, "output_path": output, "next_stage": next_stage}, "id": f"call_{step}", "type": "tool_call"}]))])
+            if name == "request_user_decision":
+                question, options = (arg.split("|") + ["", ""])[:2]
+                trace.last_action = f"request_user_decision: {question}"
+                log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[{"name": "request_user_decision", "args": {"question": question, "options": options}, "id": f"call_{step}", "type": "tool_call"}]))])
             cmd = spec if not sep else arg
             trace.last_action = f"execute: {cmd}"
             log_step(self.log_path, f"step-{step}-tool-call", trace.last_action)
@@ -143,7 +155,7 @@ def test_runtime_supervisor_tracks_agent_records(tmp_path: Path, monkeypatch) ->
     assert len(agents) == 1
     assert agents[0].status == "completed"
     assert agents[0].thread_id
-    assert agents[0].result is result
+    assert supervisor._results[agents[0].agent_id] is result
     assert agents[0].progress_text == result.summary
     assert any("Agent ID:" in note for note in result.notes)
 
@@ -153,6 +165,135 @@ def test_stage_manager_builds_default_output_path(tmp_path: Path, monkeypatch) -
     result = manager.handle(StageRequest(target="Try and stop cleanly.", output_path=None, workspace_root=tmp_path, use_agent=True))
     assert result.output_path.name == "agent-run.md"
     assert result.output_path.parent.name.startswith("agent-")
+
+
+def test_research_controller_builds_stage_prompt(tmp_path: Path) -> None:
+    controller = ResearchController(tmp_path, topic="seed scheduling", mode="auto")
+    prompt = controller.build_stage_prompt()
+    assert "Current stage: idea.survey" in prompt
+    assert f"Skill to read first: {stage_spec('idea.survey').skill_path}" in prompt
+    assert "phase1-idea/LITERATURE_SURVEY.md" in prompt
+    assert "idea -> experiment -> paper -> done" in prompt
+
+
+def test_research_controller_can_start_from_selected_stage(tmp_path: Path) -> None:
+    controller = ResearchController(tmp_path, topic="reproduce paper X", mode="auto", start_stage="experiment.setup")
+    prompt = controller.build_stage_prompt()
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    assert state["phase"] == "experiment"
+    assert state["stage"] == "experiment.setup"
+    assert "Project topic:\nreproduce paper X" in prompt
+    assert f"Skill to read first: {stage_spec('experiment.setup').skill_path}" in prompt
+
+
+def test_all_configured_stage_skills_exist() -> None:
+    for spec in STAGES.values():
+        if spec.skill_path:
+            assert Path(spec.skill_path).exists(), spec.skill_path
+
+
+def test_copied_skill_dependencies_exist() -> None:
+    root = Path("/data/auto-research/LightScientist")
+    for rel in (
+        "tools/arxiv_search.py",
+        "tools/coverage.py",
+        "tools/crash.py",
+        "templates/fuzz_experiment.sh.tmpl",
+    ):
+        assert (root / rel).exists(), rel
+
+
+def test_research_controller_runs_one_stage_and_advances(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase1-idea && printf 'survey' > phase1-idea/LITERATURE_SURVEY.md",
+        "answer: Done.",
+        scope_root=tmp_path,
+    )
+    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto").run_once()
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    events = (tmp_path / ".lightscientist/events.jsonl").read_text(encoding="utf-8")
+    assert result.status == "completed"
+    assert result.output_path == tmp_path / "phase1-idea/LITERATURE_SURVEY.md"
+    assert state["stage"] == "idea.generate"
+    assert "stage_transition" in events
+
+
+def test_research_controller_accepts_allowed_next_stage(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase1-idea && printf 'survey' > phase1-idea/LITERATURE_SURVEY.md",
+        "answer: Done.",
+        supervisor_replies=("answer: TASK_COMPLETED: survey done\nNEXT_STAGE: idea.evaluate",),
+        scope_root=tmp_path,
+    )
+    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto").run_once()
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    events = (tmp_path / ".lightscientist/events.jsonl").read_text(encoding="utf-8")
+    assert result.status == "completed"
+    assert state["stage"] == "idea.evaluate"
+    assert "next_stage_accepted" in events
+
+
+def test_research_controller_accepts_finish_stage_tool_next_stage(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase1-idea && printf 'survey' > phase1-idea/LITERATURE_SURVEY.md",
+        "answer: Done.",
+        supervisor_replies=("tool: finish_stage|completed|survey done|phase1-idea/LITERATURE_SURVEY.md|idea.evaluate",),
+        scope_root=tmp_path,
+    )
+    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto").run_once()
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    artifacts = json.loads((tmp_path / ".lightscientist/artifacts.json").read_text(encoding="utf-8"))
+    assert result.status == "completed"
+    assert result.summary == "survey done"
+    assert state["stage"] == "idea.evaluate"
+    assert artifacts["idea.survey"][0]["path"] == "phase1-idea/LITERATURE_SURVEY.md"
+    assert artifacts["idea.survey"][0]["summary"] == "survey done"
+
+
+def test_research_controller_surfaces_manual_user_decision_request(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase1-idea && printf 'survey' > phase1-idea/LITERATURE_SURVEY.md",
+        "answer: Done.",
+        supervisor_replies=("tool: request_user_decision|是否进入实验阶段？|yes/no",),
+        scope_root=tmp_path,
+    )
+    result = ResearchController(tmp_path, topic="seed scheduling", mode="manual").run_once()
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    assert result.status == "waiting"
+    assert "是否进入实验阶段" in result.summary
+    assert state["status"] == "waiting_user"
+
+
+def test_research_controller_rejects_invalid_next_stage(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase1-idea && printf 'survey' > phase1-idea/LITERATURE_SURVEY.md",
+        "answer: Done.",
+        supervisor_replies=("answer: TASK_COMPLETED: survey done\nNEXT_STAGE: paper.write",),
+        scope_root=tmp_path,
+    )
+    ResearchController(tmp_path, topic="seed scheduling", mode="auto").run_once()
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    events = (tmp_path / ".lightscientist/events.jsonl").read_text(encoding="utf-8")
+    assert state["stage"] == "idea.generate"
+    assert "next_stage_rejected" in events
+
+
+def test_cli_research_can_select_start_stage(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
+        "answer: Done.",
+        scope_root=tmp_path,
+    )
+    exit_code = main(["research", "reproduce paper X", "--workspace", str(tmp_path), "--mode", "auto", "--stage", "experiment.setup"])
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert state["stage"] == "experiment.loop"
 
 
 def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -339,6 +480,39 @@ def test_runtime_supervisor_can_run_supervisor_agent(tmp_path: Path, monkeypatch
     assert task["summary"] == "Supervisor marked the task done."
 
 
+def test_runtime_supervisor_does_not_expose_worker_lifecycle_tools_to_supervisor(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(monkeypatch, "answer: Done.", supervisor_replies=("answer: TASK_CONTINUE: checked.",), scope_root=tmp_path)
+    supervisor = RuntimeSupervisor()
+    supervisor.start(
+        RuntimeTask("toolvis", "interactive", "Finish the task", tmp_path / "agent.md", tmp_path, "Finish the task", True)
+    )
+    deadline = time.time() + 3
+    while time.time() < deadline and supervisor._supervisor is None:
+        time.sleep(0.05)
+    session = supervisor._supervisor
+    assert session is not None
+    tool_names = {tool.name for tool in session.tools}
+    assert "start_worker" in tool_names
+    assert "ask_input" not in tool_names
+    assert "suspend_background" not in tool_names
+    assert "finish_cancelled" not in tool_names
+    assert not session.include_lifecycle_tools
+
+
+def test_research_controller_exposes_artifact_listing_tool(tmp_path: Path) -> None:
+    controller = ResearchController(tmp_path, topic="seed scheduling", mode="auto")
+    out = tmp_path / "phase1-idea/LITERATURE_SURVEY.md"
+    out.parent.mkdir(parents=True)
+    out.write_text("survey", encoding="utf-8")
+    controller._record_artifact("idea.survey", out, "survey summary")
+    tools = {tool.name: tool for tool in controller._stage_tools()}
+    raw = tools["list_artifacts"].invoke({"stage": ""})
+    records = json.loads(raw)
+    assert records[0]["stage"] == "idea.survey"
+    assert records[0]["path"] == "phase1-idea/LITERATURE_SURVEY.md"
+    assert records[0]["summary"] == "survey summary"
+
+
 def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> None:
     patch_scripted_model(monkeypatch, "tool: suspend_background|实验已启动。", "", "tool: finish_cancelled|已整理取消交付。", "", scope_root=tmp_path)
     supervisor = RuntimeSupervisor()
@@ -352,7 +526,6 @@ def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> No
     assert cancelled.output_path.exists()
     assert supervisor._results[agent.agent_id] is cancelled
     assert supervisor._agents[agent.agent_id].status == "cancelled"
-    assert supervisor._agents[agent.agent_id].result is cancelled
     assert supervisor.executor.get_session(agent.agent_id) is None
     resumed = supervisor.resume(agent.agent_id, "继续")
     assert resumed.status == "cancelled"
@@ -470,5 +643,6 @@ def test_supervisor_prompt_adds_status_specific_guidance() -> None:
     assert "schedule_worker_resume" in supervisor_event_input("task", SupervisorEvent("a", "background"))
     assert "missing input" in supervisor_event_input("task", SupervisorEvent("a", "waiting"))
     assert "not shown progress" in supervisor_event_input("task", SupervisorEvent("a", "running", "Worker stalled.", kind="stall"))
+    assert "Output: /tmp/out.md" in SupervisorEvent("a", "completed", output_path=Path("/tmp/out.md")).to_prompt_text()
     assert "second-layer supervisor" in load_prompt("supervisor")
     assert "ask_input" in load_prompt("worker")

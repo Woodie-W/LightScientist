@@ -21,20 +21,21 @@ SYS = load_prompt("worker")
 def start_agent_session(
     goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
     status_cb: Callable[[RuntimeUpdate], None] | None = None, log_path: str | Path | None = None, tools: list[Any] | None = None,
+    include_lifecycle_tools: bool = True,
 ) -> AgentSession:
-    session = create_agent_session(cwd=cwd, model=model, max_steps=max_steps, system_prompt=system_prompt, log_path=log_path, tools=tools)
+    session = create_agent_session(cwd=cwd, model=model, max_steps=max_steps, system_prompt=system_prompt, log_path=log_path, tools=tools, include_lifecycle_tools=include_lifecycle_tools)
     session.last_result = resume_agent_session(session, goal, status_cb=status_cb, start=True)
     return session
 
 
 def create_agent_session(
     *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
-    log_path: str | Path | None = None, tools: list[Any] | None = None,
+    log_path: str | Path | None = None, tools: list[Any] | None = None, include_lifecycle_tools: bool = True,
 ) -> AgentSession:
     wd = Path(cwd).resolve() if cwd else Path.cwd()
     lp = Path(log_path).resolve() if log_path else (wd / "agent-debug.log")
     info = AgentSessionInfo(uuid.uuid4().hex[:8], uuid.uuid4().hex[:8], wd, lp, model, max_steps)
-    return AgentSession(info, system_prompt, MemorySaver(), list(tools or []), process_registry=CommandProcessRegistry())
+    return AgentSession(info, system_prompt, MemorySaver(), list(tools or []), include_lifecycle_tools=include_lifecycle_tools, process_registry=CommandProcessRegistry())
 
 
 def resume_agent_session(
@@ -48,7 +49,7 @@ def resume_agent_session(
     agent = create_deep_agent(
         model=chat,
         system_prompt=session.system_prompt,
-        tools=[ask_input, suspend_background, finish_cancelled, *session.tools],
+        tools=[*([ask_input, suspend_background, finish_cancelled] if session.include_lifecycle_tools else []), *session.tools],
         backend=LoggingWorkspaceBackend(trace=trace, log_path=session.log_path, root_dir=session.cwd, process_registry=session.process_registry),
         subagents=[],
         middleware=(),

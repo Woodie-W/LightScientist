@@ -26,9 +26,13 @@ def supervisor_event_input(task_objective: str, event: SupervisorEvent) -> str:
 class RuntimeSupervisor:
     """Middle layer that stores lightweight records for third-layer workers."""
 
-    def __init__(self, executor: ExecutionRuntime | None = None, stall_timeout: float | None = 300.0) -> None:
+    def __init__(
+        self, executor: ExecutionRuntime | None = None, stall_timeout: float | None = 300.0,
+        supervisor_tools: list[object] | None = None,
+    ) -> None:
         self.executor = executor or ExecutionRuntime()
         self.stall_timeout = stall_timeout
+        self.supervisor_tools = supervisor_tools or []
         self._agents: dict[str, AgentRecord] = {}
         self._results: dict[str, ExecutionResult] = {}
         self._task: dict[str, object] | None = None
@@ -52,8 +56,8 @@ class RuntimeSupervisor:
             if self._task and self._task["task_id"] != task.task_id: 
                 return ExecutionResult(task.task_id, "failed", "RuntimeSupervisor already manages another task.", task.output_path)
         agent_id = f"agent-{task.task_id}"
-        worker_root = task.workspace_root / agent_id
-        output_path = worker_root / "agent-run.md"
+        worker_root = task.workspace_root / agent_id if task.isolate_workspace else task.workspace_root
+        output_path = worker_root / "agent-run.md" if task.isolate_workspace else task.output_path
         runtime_task = RuntimeTask(task.task_id, task.stage_name, task.target, output_path, worker_root, task.objective, task.use_agent)
         with self._lock:
             self._agents[agent_id] = AgentRecord(agent_id, task.task_id, task.objective, "running", progress_text="Worker created.", workspace_root=worker_root, output_path=output_path)
@@ -100,7 +104,7 @@ class RuntimeSupervisor:
         with self._lock:
             record = self._agents.get(agent_id)
             if record and record.status == "cancelled":
-                return self._results.get(agent_id) or record.result or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
+                return self._results.get(agent_id) or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
         error = self._resume_worker_async(agent_id, user_input)
         if error:
             return ExecutionResult(agent_id.removeprefix("agent-"), "failed", error, Path.cwd() / "agent-run.md")
@@ -120,12 +124,12 @@ class RuntimeSupervisor:
         with self._lock:
             record = self._agents.get(agent_id)
             if not record: return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
-            if record.status == "cancelled": return self._results.get(agent_id) or record.result or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
+            if record.status == "cancelled": return self._results.get(agent_id) or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
         result = self.executor.cancel(agent_id)
         with self._queue_ready:
             self._update_agent(agent_id, RuntimeUpdate("cancelled", "Worker cancelled.", result=result))
             if agent_id in self._waiters: self._waiters[agent_id].set()
-            self._supervisor_queue.append(SupervisorEvent(agent_id, "cancelled", "Worker cancelled.", result.summary))
+            self._supervisor_queue.append(SupervisorEvent(agent_id, "cancelled", "Worker cancelled.", result.summary, result.output_path))
             self._queue_ready.notify()
             return result
 
@@ -191,8 +195,9 @@ class RuntimeSupervisor:
         self._update_agent(agent_id, update)
         should_notify_supervisor = old_status != update.status or update.result is not None
         if should_notify_supervisor:
+            result = update.result
             with self._queue_ready:
-                self._supervisor_queue.append(SupervisorEvent(agent_id, update.status, update.text, update.result.summary if update.result else ""))
+                self._supervisor_queue.append(SupervisorEvent(agent_id, update.status, update.text, result.summary if result else "", result.output_path if result else None))
                 self._queue_ready.notify()
         if update.result and agent_id in self._waiters: self._waiters[agent_id].set()
 
@@ -212,6 +217,7 @@ class RuntimeSupervisor:
                     system_prompt=load_prompt("supervisor"),
                     log_path=(self._workspace_root or Path.cwd()) / f"supervisor-{task['task_id']}.log",
                     tools=self._runtime_tools(),
+                    include_lifecycle_tools=False,
                 )
                 self._supervisor = session
                 result = session.last_result
@@ -363,6 +369,7 @@ class RuntimeSupervisor:
             start_worker_tool,
             cancel_worker_tool,
             schedule_worker_resume_tool,
+            *self.supervisor_tools,
         ]
 
     # ---------------------------------------------------------------
@@ -398,9 +405,7 @@ class RuntimeSupervisor:
         if update.progress: record.progress = update.progress.snapshot()
         if update.status != "running": record.stall_reported, record.stalled_action_count = False, -1
         if update.thread_id: record.thread_id = update.thread_id
-        if update.result:
-            record.result = update.result
-            self._results[agent_id] = update.result
+        if update.result: self._results[agent_id] = update.result
 
     # 卡死检测
     def _check_worker_stalls_locked(self) -> None:
@@ -450,6 +455,6 @@ class RuntimeSupervisor:
     # 结果封装
     def _final_result(self, agent_id: str) -> ExecutionResult:
         record = self._agents[agent_id]
-        result = self._results.get(agent_id) or record.result or ExecutionResult(record.task_id, record.status, record.progress_text or "No result.", record.output_path or (Path.cwd() / "agent-run.md"))
+        result = self._results.get(agent_id) or ExecutionResult(record.task_id, record.status, record.progress_text or "No result.", record.output_path or (Path.cwd() / "agent-run.md"))
         result.notes.extend([f"Agent ID: {agent_id}", f"Final status: {result.status}"])
         return result

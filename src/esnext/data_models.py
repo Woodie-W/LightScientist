@@ -12,6 +12,8 @@ from langgraph.checkpoint.memory import MemorySaver
 ExecutionState = Literal["running", "waiting", "background", "completed", "failed", "cancelled"]
 ResumeMode = Literal["message", "interrupt"]
 AgentRunState = Literal["completed", "failed", "max_steps_reached", "running", "waiting", "background", "cancelled"]
+ResearchMode = Literal["auto", "manual"]
+ResearchStatus = Literal["idle", "running", "waiting_user", "completed", "failed", "paused"]
 
 
 # ---------------------------------------------------------------
@@ -40,6 +42,55 @@ class RuntimeTask:
     workspace_root: Path
     objective: str
     use_agent: bool = False
+    isolate_workspace: bool = True
+
+
+@dataclass(slots=True)
+class ResearchState:
+    """Persistent first-layer research controller state."""
+
+    project_id: str
+    topic: str
+    mode: ResearchMode
+    phase: str
+    stage: str
+    status: ResearchStatus
+    workspace_root: Path
+    current_task_id: str = ""
+    last_summary: str = ""
+    last_output_path: str = ""
+    pending_question: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "project_id": self.project_id,
+            "topic": self.topic,
+            "mode": self.mode,
+            "phase": self.phase,
+            "stage": self.stage,
+            "status": self.status,
+            "workspace_root": str(self.workspace_root),
+            "current_task_id": self.current_task_id,
+            "last_summary": self.last_summary,
+            "last_output_path": self.last_output_path,
+            "pending_question": self.pending_question,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "ResearchState":
+        return cls(
+            project_id=str(data["project_id"]),
+            topic=str(data.get("topic", "")),
+            mode=str(data.get("mode", "manual")),  # type: ignore[arg-type]
+            phase=str(data.get("phase", "idea")),
+            stage=str(data.get("stage", "idea.survey")),
+            status=str(data.get("status", "idle")),  # type: ignore[arg-type]
+            workspace_root=Path(str(data.get("workspace_root", "."))),
+            current_task_id=str(data.get("current_task_id", "")),
+            last_summary=str(data.get("last_summary", "")),
+            last_output_path=str(data.get("last_output_path", "")),
+            pending_question=str(data.get("pending_question", "")),
+        )
 
 
 @dataclass(slots=True)
@@ -151,7 +202,6 @@ class AgentRecord:
     stalled_action_count: int = -1
     workspace_root: Path | None = None
     output_path: Path | None = None
-    result: ExecutionResult | None = None  # Final execution result once a worker round finishes.
 
     @property
     def pending_text(self) -> str:
@@ -172,13 +222,6 @@ class AgentRecord:
             "workspace_root": str(self.workspace_root) if self.workspace_root else "",
             "output_path": str(self.output_path) if self.output_path else "",
         }
-        if self.result:
-            data["result"] = {
-                "status": self.result.status,
-                "summary": self.result.summary,
-                "output_path": str(self.result.output_path),
-                "artifacts": [str(path) for path in self.result.artifacts],
-            }
         return data
 
 
@@ -204,6 +247,7 @@ class SupervisorEvent:
     status: ExecutionState
     text: str = ""
     summary: str = ""
+    output_path: Path | None = None
     kind: str = "worker"
 
     @property
@@ -214,10 +258,9 @@ class SupervisorEvent:
 
     def to_prompt_text(self) -> str:
         parts = [f"Worker: {self.agent_id}", f"Status: {self.status}"]
-        if self.text:
-            parts.append(f"Text: {self.text}")
-        if self.summary:
-            parts.append(f"Summary: {self.summary}")
+        if self.text: parts.append(f"Text: {self.text}")
+        if self.summary: parts.append(f"Summary: {self.summary}")
+        if self.output_path: parts.append(f"Output: {self.output_path}")
         return "\n".join(parts)
 
 
@@ -287,6 +330,7 @@ class AgentSession(HasAgentSessionInfo):
     system_prompt: str
     checkpointer: MemorySaver
     tools: list[Any] = field(default_factory=list)
+    include_lifecycle_tools: bool = True
     resume_mode: ResumeMode = "message"
     last_result: AgentRunResult | None = None
     process_registry: Any | None = None
