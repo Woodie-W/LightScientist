@@ -57,9 +57,10 @@ class ResearchState:
     status: ResearchStatus
     workspace_root: Path
     current_task_id: str = ""
-    last_summary: str = ""
-    last_output_path: str = ""
+    output_path: str = ""
     pending_question: str = ""
+    pending_next_stage: str = ""
+    user_feedback: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -71,9 +72,10 @@ class ResearchState:
             "status": self.status,
             "workspace_root": str(self.workspace_root),
             "current_task_id": self.current_task_id,
-            "last_summary": self.last_summary,
-            "last_output_path": self.last_output_path,
+            "output_path": self.output_path,
             "pending_question": self.pending_question,
+            "pending_next_stage": self.pending_next_stage,
+            "user_feedback": self.user_feedback,
         }
 
     @classmethod
@@ -87,9 +89,10 @@ class ResearchState:
             status=str(data.get("status", "idle")),  # type: ignore[arg-type]
             workspace_root=Path(str(data.get("workspace_root", "."))),
             current_task_id=str(data.get("current_task_id", "")),
-            last_summary=str(data.get("last_summary", "")),
-            last_output_path=str(data.get("last_output_path", "")),
+            output_path=str(data.get("output_path", data.get("last_output_path", ""))),
             pending_question=str(data.get("pending_question", "")),
+            pending_next_stage=str(data.get("pending_next_stage", "")),
+            user_feedback=str(data.get("user_feedback", "")),
         )
 
 

@@ -8,6 +8,13 @@
 2. 第二层：运行状态管理层
 3. 第三层：能力执行层
 
+架构文档：
+
+- `system-architecture.md`
+- `first-layer-research-controller.md`
+- `second-layer-runtime-supervisor.md`
+- `third-layer-execution-runtime.md`
+
 ## 当前第三层
 
 第三层已经不是一次性函数，而是最小持久会话骨架：

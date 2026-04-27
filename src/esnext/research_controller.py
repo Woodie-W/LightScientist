@@ -24,19 +24,26 @@ class ResearchController:
         self.state_dir = self.workspace_root / ".lightscientist"
         self.state_path = self.state_dir / "project_state.json"
         self.events_path = self.state_dir / "events.jsonl"
-        self.artifacts_path = self.state_dir / "artifacts.json"
+        self.process_path = self.workspace_root / "PROCESS.md"
         self.decision_timeout = decision_timeout
         self.supervisor_factory = supervisor_factory
         self._stage_decision: dict[str, str] = {}
         self.state = self._load_or_create_state(topic, mode, start_stage)
 
-    def run_once(self) -> ExecutionResult:
+    def run(self) -> ExecutionResult:
+        result = ExecutionResult(self.state.current_task_id or self.state.project_id, "completed", "", self._path(self.state.output_path))
+        while True:
+            result = self._run_stage()
+            if result.status != "completed" or self.state.stage == "done":
+                return result
+
+    def _run_stage(self) -> ExecutionResult:
         if self.state.stage == "done":
             return ExecutionResult(
                 self.state.current_task_id or self.state.project_id,
                 "completed",
                 "Research project is already done.",
-                self._path(self.state.last_output_path),
+                self._path(self.state.output_path),
             )
         spec = stage_spec(self.state.stage)
         if spec.human_gate:
@@ -48,6 +55,7 @@ class ResearchController:
         self.state.status = "running"
         self.state.current_task_id = task_id
         self.state.phase = spec.phase
+        self.state.user_feedback = ""
         self._save_state()
         self._append_event("stage_started", stage=self.state.stage, task_id=task_id)
         self._stage_decision = {}
@@ -55,13 +63,18 @@ class ResearchController:
         result = supervisor.start(RuntimeTask(task_id, self.state.stage, prompt, run_output, self.workspace_root, prompt, True, False))
         stage_status, stage_summary, stage_output, next_stage = self._read_stage_decision(supervisor, task_id, result.summary)
         output_path = self._path(stage_output or spec.output_path)
-        self.state.last_summary = stage_summary
-        self.state.last_output_path = str(output_path)
+        self.state.output_path = str(output_path)
         if stage_status == "failed":
             self._set_status("failed", event_type="stage_failed", reason=stage_summary)
             return ExecutionResult(task_id, "failed", stage_summary, output_path)
         if stage_status == "blocked":
-            self._set_status("waiting_user", pending=stage_summary, event_type="stage_blocked", question=stage_summary)
+            self._set_status(
+                "waiting_user",
+                pending=stage_summary,
+                next_stage=self._validated_next_stage(spec, next_stage) if next_stage else "",
+                event_type="stage_blocked",
+                question=stage_summary,
+            )
             return ExecutionResult(task_id, "waiting", stage_summary, output_path)
         if result.status in {"waiting", "background"}:
             self._set_status(
@@ -79,9 +92,9 @@ class ResearchController:
             summary = f"Stage completed but required output is missing: {output_path}"
             self._set_status("failed", event_type="stage_failed", reason=summary)
             return ExecutionResult(task_id, "failed", summary, output_path)
-        self._record_artifact(self.state.stage, output_path, stage_summary)
+        self._append_process(spec, output_path, stage_summary)
         self._append_event("stage_finished", stage=self.state.stage, status="completed", output_path=str(output_path))
-        self._transition_to(self._validated_next_stage(spec, next_stage))
+        self._transition_to(self._resolved_next_stage(spec, next_stage))
         return ExecutionResult(
             task_id,
             "completed",
@@ -96,6 +109,8 @@ class ResearchController:
         phase_lines = "\n".join(f"- {line}" for line in PHASE_DESCRIPTIONS.get(spec.phase, ()))
         allowed = "\n".join(f"- {name}" for name in spec.allowed_next)
         skill_line = f"Skill to read first: {spec.skill_path}" if spec.skill_path else "No skill file for this gate stage."
+        feedback = f"\nLatest user feedback:\n{self.state.user_feedback}\n" if self.state.user_feedback else "\n"
+        phase2_state = f"\nPhase 2 state:\n{self._phase2_state_text()}\n" if spec.phase == "experiment" else "\n"
         return f"""You are the second-layer supervisor for one research stage.
 
 Global pipeline:
@@ -103,6 +118,8 @@ idea -> experiment -> paper -> done
 
 Project topic:
 {self.state.topic}
+{feedback}
+{phase2_state}
 
 Current phase: {spec.phase}
 Current stage: {spec.name}
@@ -111,6 +128,13 @@ Current phase stages:
 {phase_lines}
 
 {skill_line}
+
+Read `PROCESS.md` first when it exists for the high-level project history.
+
+Read standard phase files directly when needed:
+- idea: `phase1-idea/LITERATURE_SURVEY.md`, `phase1-idea/IDEAS_CANDIDATES.md`, `phase1-idea/IDEA_REPORT.md`
+- experiment: `research.md`, `research.jsonl`, `phase2-experiment/worklog.md`, `phase2-experiment/EXPERIMENT_RESULTS.md`
+- paper: `phase3-paper/PAPER_PLAN.md`, `phase3-paper/figures/`, `phase3-paper/paper/main.pdf`
 
 Required output:
 {spec.output_path}
@@ -123,7 +147,6 @@ Rules:
 - If a skill path is provided, read that SKILL.md before acting.
 - Do not edit .lightscientist/project_state.json directly.
 - Write the required output file before reporting completion.
-- Use list_artifacts when you need summaries or paths from prior stages.
 - When the stage is completed, failed, or blocked, call finish_stage.
 - Use request_user_decision only for project-level decisions that cannot be answered from files or workers.
 - In auto mode, avoid user interruption; decide from available evidence or finish the stage as failed.
@@ -162,22 +185,6 @@ Rules:
             }
             return json.dumps({"status": "accepted", "stage_status": normalized}, ensure_ascii=False)
 
-        @tool("list_artifacts", parse_docstring=True)
-        def list_artifacts_tool(stage: str = "") -> str:
-            """List prior stage artifacts and their summaries.
-
-            Use this when you need context from previous research stages. This
-            returns artifact paths and concise handoff summaries only; read the
-            files directly if more detail is needed.
-
-            Args:
-                stage: Optional stage name to filter, such as "idea.evaluate".
-
-            Returns:
-                JSON list of artifact records.
-            """
-            return json.dumps(self._list_artifacts(stage), ensure_ascii=False)
-
         @tool("request_user_decision", parse_docstring=True)
         def request_user_decision_tool(question: str, options: str = "") -> str:
             """Request a project-level human decision from the CLI user.
@@ -199,21 +206,39 @@ Rules:
             self._stage_decision = {"status": "blocked", "summary": text, "output_path": "", "next_stage": ""}
             return json.dumps({"status": "waiting_user", "question": text}, ensure_ascii=False)
 
-        return [finish_stage_tool, request_user_decision_tool, list_artifacts_tool]
+        return [finish_stage_tool, request_user_decision_tool]
+
+    def reply_user(self, text: str) -> ExecutionResult:
+        if self.state.status != "waiting_user":
+            return ExecutionResult(self.state.current_task_id or self.state.project_id, "failed", "No pending user decision.", self._path(self.state.output_path))
+        answer, _, reason = text.strip().partition(" ")
+        answer, reason = answer.lower(), reason.strip()
+        if answer not in {"y", "n"}:
+            return ExecutionResult(self.state.current_task_id or self.state.project_id, "failed", "Reply must start with `y` or `n`.", self._path(self.state.output_path))
+        self.state.user_feedback = reason
+        self._append_event("user_reply", stage=self.state.stage, answer=answer, reason=reason)
+        if answer == "y" and self.state.pending_next_stage:
+            self._transition_to(self.state.pending_next_stage)
+        elif answer == "n" and stage_spec(self.state.stage).human_gate:
+            self._transition_to(self._rejected_gate_stage())
+        else:
+            self._set_status("idle")
+        return self.run()
 
     def _handle_gate(self, output_path: Path) -> ExecutionResult:
         spec = stage_spec(self.state.stage)
         if self.state.mode == "manual":
-            self._set_status("waiting_user", pending=f"Confirm transition from {self.state.stage} to {spec.default_next}?")
+            self._set_status("waiting_user", pending=f"Confirm transition from {self.state.stage} to {spec.default_next}?", next_stage=spec.default_next)
             self._append_event("gate_waiting", stage=self.state.stage, next_stage=spec.default_next)
             return ExecutionResult(self.state.current_task_id or self.state.stage, "waiting", self.state.pending_question, output_path)
         self._append_event("gate_auto_approved", stage=self.state.stage, next_stage=spec.default_next)
         self._transition_to(spec.default_next)
         return ExecutionResult(self.state.current_task_id or self.state.stage, "completed", f"Auto-approved gate to {spec.default_next}.", output_path)
 
-    def _set_status(self, status: str, pending: str = "", event_type: str = "", **data: object) -> None:
+    def _set_status(self, status: str, pending: str = "", next_stage: str = "", event_type: str = "", **data: object) -> None:
         self.state.status = status
         self.state.pending_question = pending
+        self.state.pending_next_stage = next_stage
         self._save_state()
         if event_type:
             self._append_event(event_type, stage=self.state.stage, **data)
@@ -225,8 +250,16 @@ Rules:
         self.state.status = "completed" if next_stage == "done" else "idle"
         self.state.current_task_id = ""
         self.state.pending_question = ""
+        self.state.pending_next_stage = ""
         self._save_state()
         self._append_event("stage_transition", **{"from": old, "to": next_stage})
+
+    def _rejected_gate_stage(self) -> str:
+        spec = stage_spec(self.state.stage)
+        for name in spec.allowed_next:
+            if name != spec.default_next and stage_spec(name).phase == spec.phase:
+                return name
+        return spec.name
 
     def _read_stage_decision(self, supervisor: RuntimeSupervisor, task_id: str, fallback: str) -> tuple[str, str, str, str]:
         deadline = time.monotonic() + self.decision_timeout
@@ -257,6 +290,15 @@ Rules:
         self._append_event("next_stage_accepted" if accepted else "next_stage_rejected", stage=spec.name, next_stage=proposed)
         return proposed if accepted else spec.default_next
 
+    def _resolved_next_stage(self, spec, proposed: str) -> str:
+        if proposed:
+            return self._validated_next_stage(spec, proposed)
+        if spec.name == "experiment.loop":
+            next_stage = "experiment.analyze" if self._phase2_state()["results_ready"] else "experiment.loop"
+            self._append_event("next_stage_inferred", stage=spec.name, next_stage=next_stage)
+            return next_stage
+        return spec.default_next
+
     def _load_or_create_state(self, topic: str, mode: ResearchMode, start_stage: str) -> ResearchState:
         if self.state_path.exists():
             return ResearchState.from_dict(json.loads(self.state_path.read_text(encoding="utf-8")))
@@ -278,22 +320,76 @@ Rules:
         with self.events_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
-    def _list_artifacts(self, stage: str = "") -> list[dict[str, object]]:
-        if not self.artifacts_path.exists():
-            return []
-        data = json.loads(self.artifacts_path.read_text(encoding="utf-8"))
-        return [{"stage": item_stage, **record} for item_stage, records in data.items() if not stage or item_stage == stage for record in records]
+    def _phase2_state(self) -> dict[str, object]:
+        research_md = self.workspace_root / "research.md"
+        research_jsonl = self.workspace_root / "research.jsonl"
+        worklog = self.workspace_root / "phase2-experiment/worklog.md"
+        results = self.workspace_root / "phase2-experiment/EXPERIMENT_RESULTS.md"
+        state: dict[str, object] = {
+            "research_md": research_md.exists(),
+            "research_jsonl": research_jsonl.exists(),
+            "worklog": worklog.exists(),
+            "results_ready": results.exists(),
+            "runs": 0,
+            "keep": 0,
+            "discard": 0,
+            "crash": 0,
+            "sanity_fail": 0,
+            "best_keep": "",
+        }
+        if not research_jsonl.exists():
+            return state
+        primary = "branch_cov"
+        best_value: float | None = None
+        best_note = ""
+        for line in research_jsonl.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if item.get("type") == "config":
+                primary = str(item.get("metrics", {}).get("primary", {}).get("name", primary))
+                continue
+            state["runs"] = int(state["runs"]) + 1
+            status = str(item.get("status", ""))
+            if status in {"keep", "discard", "crash", "sanity_fail"}:
+                state[status] = int(state[status]) + 1
+            value = item.get("results", {}).get(primary, {}).get("mean")
+            if status == "keep" and isinstance(value, (int, float)) and (best_value is None or float(value) > best_value):
+                best_value = float(value)
+                best_note = f"run {item.get('run', '?')}: {primary}={value} ({item.get('description', '')})".strip()
+        state["best_keep"] = best_note
+        return state
 
-    def _record_artifact(self, stage: str, path: Path, summary: str) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        data = json.loads(self.artifacts_path.read_text(encoding="utf-8")) if self.artifacts_path.exists() else {}
-        records = data.setdefault(stage, [])
-        rel_path = str(path.relative_to(self.workspace_root)) if path.is_relative_to(self.workspace_root) else str(path)
-        record = {"path": rel_path, "summary": summary, "created_at": time.time()}
-        records[:] = [item for item in records if item.get("path") != rel_path]
-        records.append(record)
-        self.artifacts_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        self._append_event("artifact_recorded", stage=stage, path=rel_path)
+    def _phase2_state_text(self) -> str:
+        state = self._phase2_state()
+        lines = [
+            f"- research.md: {'present' if state['research_md'] else 'missing'}",
+            f"- research.jsonl: {'present' if state['research_jsonl'] else 'missing'}",
+            f"- worklog: {'present' if state['worklog'] else 'missing'}",
+            f"- experiment results: {'present' if state['results_ready'] else 'missing'}",
+            f"- runs: {state['runs']} | keep: {state['keep']} | discard: {state['discard']} | crash: {state['crash']} | sanity_fail: {state['sanity_fail']}",
+        ]
+        if state["best_keep"]:
+            lines.append(f"- best keep: {state['best_keep']}")
+        return "\n".join(lines)
+
+    def _append_process(self, spec, output_path: Path, summary: str) -> None:
+        rel = str(output_path.relative_to(self.workspace_root)) if output_path.is_relative_to(self.workspace_root) else str(output_path)
+        workspace = {"idea": "phase1-idea/", "experiment": "phase2-experiment/", "paper": "phase3-paper/"}.get(spec.phase, "./")
+        lines = [
+            f"## {spec.name}",
+            f"- Workspace: {workspace}",
+            f"- Main output: {rel}",
+            f"- Summary: {summary or 'No summary provided.'}",
+        ]
+        if spec.phase == "experiment":
+            lines.append("- Extra files: research.md, research.jsonl, phase2-experiment/worklog.md")
+        with self.process_path.open("a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n\n")
 
     def _path(self, value: str) -> Path:
         path = Path(value) if value else self.workspace_root / "research-result.md"

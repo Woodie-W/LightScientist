@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     research_parser.add_argument("--workspace", default=".", help="Workspace root for research state and artifacts.")
     research_parser.add_argument("--mode", choices=["auto", "manual"], default="manual", help="Gate mode for phase transitions.")
     research_parser.add_argument("--stage", default="idea.survey", help="Starting stage for a new project, e.g. idea.survey or experiment.setup.")
+    research_parser.add_argument("--reply", help="Reply to a pending manual decision with `y [note]` or `n [note]`.")
     return parser
 
 
@@ -93,7 +94,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "research":
-        result = ResearchController(args.workspace, topic=args.topic, mode=args.mode, start_stage=args.stage).run_once()
+        controller = ResearchController(args.workspace, topic=args.topic, mode=args.mode, start_stage=args.stage)
+        result = controller.reply_user(args.reply) if args.reply else controller.run()
         print_result(result)
         return 0 if result.status in OK_STATES else 1
     if args.command != "run": parser.error(f"Unsupported command: {args.command}")

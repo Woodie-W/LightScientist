@@ -32,7 +32,7 @@ STAGES: dict[str, StageSpec] = {
     "idea.probe_collect": StageSpec("idea.probe_collect", "idea", _skill("idea-probe-collect"), "phase1-idea/PROBE_SUMMARY.md", "idea.gate", ("idea.generate", "idea.evaluate", "idea.gate")),
     "idea.gate": StageSpec("idea.gate", "idea", "", "phase1-idea/IDEA_REPORT.md", "experiment.setup", ("experiment.setup", "idea.generate", "idea.probe_batch"), True),
     "experiment.setup": StageSpec("experiment.setup", "experiment", _skill("fuzz-setup"), "phase2-experiment/SETUP_COMPLETE.md", "experiment.loop", ("experiment.loop",)),
-    "experiment.loop": StageSpec("experiment.loop", "experiment", _skill("fuzz-loop"), "phase2-experiment/EXPERIMENT_RESULTS.md", "experiment.analyze", ("experiment.setup", "experiment.analyze", "experiment.gate")),
+    "experiment.loop": StageSpec("experiment.loop", "experiment", _skill("fuzz-loop"), "research.jsonl", "experiment.analyze", ("experiment.setup", "experiment.loop", "experiment.analyze", "experiment.gate")),
     "experiment.analyze": StageSpec("experiment.analyze", "experiment", _skill("fuzz-analyze"), "phase2-experiment/EXPERIMENT_RESULTS.md", "experiment.gate", ("experiment.loop", "experiment.gate")),
     "experiment.gate": StageSpec("experiment.gate", "experiment", _skill("fuzz-analyze"), "phase2-experiment/EXPERIMENT_RESULTS.md", "paper.plan", ("paper.plan", "experiment.loop", "experiment.analyze"), True),
     "paper.plan": StageSpec("paper.plan", "paper", _skill("paper-plan"), "phase3-paper/PAPER_PLAN.md", "paper.figure", ("paper.figure", "paper.write")),

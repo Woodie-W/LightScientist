@@ -172,8 +172,17 @@ def test_research_controller_builds_stage_prompt(tmp_path: Path) -> None:
     prompt = controller.build_stage_prompt()
     assert "Current stage: idea.survey" in prompt
     assert f"Skill to read first: {stage_spec('idea.survey').skill_path}" in prompt
+    assert "Read `PROCESS.md` first" in prompt
     assert "phase1-idea/LITERATURE_SURVEY.md" in prompt
     assert "idea -> experiment -> paper -> done" in prompt
+
+
+def test_research_controller_builds_prompt_with_user_feedback(tmp_path: Path) -> None:
+    controller = ResearchController(tmp_path, topic="seed scheduling", mode="auto")
+    controller.state.user_feedback = "focus on libpng first"
+    prompt = controller.build_stage_prompt()
+    assert "Latest user feedback:" in prompt
+    assert "focus on libpng first" in prompt
 
 
 def test_research_controller_can_start_from_selected_stage(tmp_path: Path) -> None:
@@ -184,6 +193,22 @@ def test_research_controller_can_start_from_selected_stage(tmp_path: Path) -> No
     assert state["stage"] == "experiment.setup"
     assert "Project topic:\nreproduce paper X" in prompt
     assert f"Skill to read first: {stage_spec('experiment.setup').skill_path}" in prompt
+
+
+def test_research_controller_builds_experiment_prompt_with_phase2_state(tmp_path: Path) -> None:
+    (tmp_path / "phase2-experiment").mkdir()
+    (tmp_path / "research.md").write_text("goal", encoding="utf-8")
+    (tmp_path / "phase2-experiment/worklog.md").write_text("worklog", encoding="utf-8")
+    (tmp_path / "research.jsonl").write_text(
+        '{"type":"config","metrics":{"primary":{"name":"branch_cov"}}}\n'
+        '{"run":1,"status":"keep","description":"baseline","results":{"branch_cov":{"mean":64}}}\n',
+        encoding="utf-8",
+    )
+    controller = ResearchController(tmp_path, topic="reproduce paper X", mode="auto", start_stage="experiment.loop")
+    prompt = controller.build_stage_prompt()
+    assert "Phase 2 state:" in prompt
+    assert "- research.jsonl: present" in prompt
+    assert "- runs: 1 | keep: 1" in prompt
 
 
 def test_all_configured_stage_skills_exist() -> None:
@@ -210,13 +235,17 @@ def test_research_controller_runs_one_stage_and_advances(tmp_path: Path, monkeyp
         "answer: Done.",
         scope_root=tmp_path,
     )
-    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto").run_once()
+    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto")._run_stage()
     state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
     events = (tmp_path / ".lightscientist/events.jsonl").read_text(encoding="utf-8")
+    process = (tmp_path / "PROCESS.md").read_text(encoding="utf-8")
     assert result.status == "completed"
     assert result.output_path == tmp_path / "phase1-idea/LITERATURE_SURVEY.md"
     assert state["stage"] == "idea.generate"
     assert "stage_transition" in events
+    assert "## idea.survey" in process
+    assert "- Workspace: phase1-idea/" in process
+    assert "- Main output: phase1-idea/LITERATURE_SURVEY.md" in process
 
 
 def test_research_controller_accepts_allowed_next_stage(tmp_path: Path, monkeypatch) -> None:
@@ -227,7 +256,7 @@ def test_research_controller_accepts_allowed_next_stage(tmp_path: Path, monkeypa
         supervisor_replies=("answer: TASK_COMPLETED: survey done\nNEXT_STAGE: idea.evaluate",),
         scope_root=tmp_path,
     )
-    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto").run_once()
+    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto")._run_stage()
     state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
     events = (tmp_path / ".lightscientist/events.jsonl").read_text(encoding="utf-8")
     assert result.status == "completed"
@@ -243,14 +272,12 @@ def test_research_controller_accepts_finish_stage_tool_next_stage(tmp_path: Path
         supervisor_replies=("tool: finish_stage|completed|survey done|phase1-idea/LITERATURE_SURVEY.md|idea.evaluate",),
         scope_root=tmp_path,
     )
-    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto").run_once()
+    result = ResearchController(tmp_path, topic="seed scheduling", mode="auto")._run_stage()
     state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
-    artifacts = json.loads((tmp_path / ".lightscientist/artifacts.json").read_text(encoding="utf-8"))
     assert result.status == "completed"
     assert result.summary == "survey done"
     assert state["stage"] == "idea.evaluate"
-    assert artifacts["idea.survey"][0]["path"] == "phase1-idea/LITERATURE_SURVEY.md"
-    assert artifacts["idea.survey"][0]["summary"] == "survey done"
+    assert state["output_path"] == str(tmp_path / "phase1-idea/LITERATURE_SURVEY.md")
 
 
 def test_research_controller_surfaces_manual_user_decision_request(tmp_path: Path, monkeypatch) -> None:
@@ -261,11 +288,81 @@ def test_research_controller_surfaces_manual_user_decision_request(tmp_path: Pat
         supervisor_replies=("tool: request_user_decision|是否进入实验阶段？|yes/no",),
         scope_root=tmp_path,
     )
-    result = ResearchController(tmp_path, topic="seed scheduling", mode="manual").run_once()
+    result = ResearchController(tmp_path, topic="seed scheduling", mode="manual")._run_stage()
     state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
     assert result.status == "waiting"
     assert "是否进入实验阶段" in result.summary
     assert state["status"] == "waiting_user"
+
+
+def test_research_controller_reply_yes_transitions_and_runs_next_stage(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
+        "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl",
+        "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf 'analysis' > phase2-experiment/EXPERIMENT_RESULTS.md",
+        "answer: Done.",
+        "answer: Done.",
+        scope_root=tmp_path,
+    )
+    controller = ResearchController(tmp_path, topic="seed scheduling", mode="manual", start_stage="idea.gate")
+    waiting = controller.run()
+    result = controller.reply_user("y start with libpng")
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    assert waiting.status == "waiting"
+    assert result.status == "waiting"
+    assert result.output_path == tmp_path / "phase2-experiment/EXPERIMENT_RESULTS.md"
+    assert state["stage"] == "experiment.gate"
+
+
+def test_research_controller_reply_no_revisits_same_phase(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase1-idea && printf 'ideas' > phase1-idea/IDEAS_CANDIDATES.md",
+        "answer: Done.",
+        "tool: mkdir -p phase1-idea && printf 'report' > phase1-idea/IDEA_REPORT.md",
+        "answer: Done.",
+        scope_root=tmp_path,
+    )
+    controller = ResearchController(tmp_path, topic="seed scheduling", mode="manual", start_stage="idea.gate")
+    controller.run()
+    result = controller.reply_user("n find more ideas")
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    events = (tmp_path / ".lightscientist/events.jsonl").read_text(encoding="utf-8")
+    assert result.status == "waiting"
+    assert state["stage"] == "idea.gate"
+    assert '"from": "idea.gate", "to": "idea.generate"' in events
+
+
+def test_experiment_loop_stays_in_loop_without_final_results(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl",
+        "answer: Done.",
+        scope_root=tmp_path,
+    )
+    controller = ResearchController(tmp_path, topic="seed scheduling", mode="auto", start_stage="experiment.loop")
+    result = controller._run_stage()
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    assert result.status == "completed"
+    assert result.output_path == tmp_path / "research.jsonl"
+    assert state["stage"] == "experiment.loop"
+
+
+def test_experiment_loop_advances_to_analyze_when_results_exist(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl && printf 'results' > phase2-experiment/EXPERIMENT_RESULTS.md",
+        "answer: Done.",
+        scope_root=tmp_path,
+    )
+    controller = ResearchController(tmp_path, topic="seed scheduling", mode="auto", start_stage="experiment.loop")
+    result = controller._run_stage()
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    assert result.status == "completed"
+    assert state["stage"] == "experiment.analyze"
 
 
 def test_research_controller_rejects_invalid_next_stage(tmp_path: Path, monkeypatch) -> None:
@@ -276,7 +373,7 @@ def test_research_controller_rejects_invalid_next_stage(tmp_path: Path, monkeypa
         supervisor_replies=("answer: TASK_COMPLETED: survey done\nNEXT_STAGE: paper.write",),
         scope_root=tmp_path,
     )
-    ResearchController(tmp_path, topic="seed scheduling", mode="auto").run_once()
+    ResearchController(tmp_path, topic="seed scheduling", mode="auto")._run_stage()
     state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
     events = (tmp_path / ".lightscientist/events.jsonl").read_text(encoding="utf-8")
     assert state["stage"] == "idea.generate"
@@ -288,12 +385,36 @@ def test_cli_research_can_select_start_stage(tmp_path: Path, monkeypatch) -> Non
         monkeypatch,
         "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
         "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl",
+        "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf 'analysis' > phase2-experiment/EXPERIMENT_RESULTS.md",
+        "answer: Done.",
+        "answer: Done.",
         scope_root=tmp_path,
     )
-    exit_code = main(["research", "reproduce paper X", "--workspace", str(tmp_path), "--mode", "auto", "--stage", "experiment.setup"])
+    exit_code = main(["research", "reproduce paper X", "--workspace", str(tmp_path), "--mode", "manual", "--stage", "experiment.setup"])
     state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
     assert exit_code == 0
-    assert state["stage"] == "experiment.loop"
+    assert state["stage"] == "experiment.gate"
+
+
+def test_cli_research_can_reply_to_manual_gate(tmp_path: Path, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
+        "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl",
+        "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf 'analysis' > phase2-experiment/EXPERIMENT_RESULTS.md",
+        "answer: Done.",
+        "answer: Done.",
+        scope_root=tmp_path,
+    )
+    main(["research", "seed scheduling", "--workspace", str(tmp_path), "--mode", "manual", "--stage", "idea.gate"])
+    exit_code = main(["research", "--workspace", str(tmp_path), "--reply", "y proceed"])
+    state = json.loads((tmp_path / ".lightscientist/project_state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert state["stage"] == "experiment.gate"
 
 
 def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -497,20 +618,6 @@ def test_runtime_supervisor_does_not_expose_worker_lifecycle_tools_to_supervisor
     assert "suspend_background" not in tool_names
     assert "finish_cancelled" not in tool_names
     assert not session.include_lifecycle_tools
-
-
-def test_research_controller_exposes_artifact_listing_tool(tmp_path: Path) -> None:
-    controller = ResearchController(tmp_path, topic="seed scheduling", mode="auto")
-    out = tmp_path / "phase1-idea/LITERATURE_SURVEY.md"
-    out.parent.mkdir(parents=True)
-    out.write_text("survey", encoding="utf-8")
-    controller._record_artifact("idea.survey", out, "survey summary")
-    tools = {tool.name: tool for tool in controller._stage_tools()}
-    raw = tools["list_artifacts"].invoke({"stage": ""})
-    records = json.loads(raw)
-    assert records[0]["stage"] == "idea.survey"
-    assert records[0]["path"] == "phase1-idea/LITERATURE_SURVEY.md"
-    assert records[0]["summary"] == "survey summary"
 
 
 def test_runtime_supervisor_can_cancel_worker(tmp_path: Path, monkeypatch) -> None:
