@@ -14,6 +14,7 @@
 - `first-layer-research-controller.md`
 - `second-layer-runtime-supervisor.md`
 - `third-layer-execution-runtime.md`
+- `server-reproduction-debug-manual.md`
 
 ## 当前第三层
 
@@ -73,6 +74,7 @@ worker prompt 约束：
 - supervisor 调用 `start_worker` / `resume_worker` 是非阻塞发射，worker 结果之后再作为事件回流
 - 第二层用 `_results` 保存每个 worker 的交付结果
 - supervisor 约定优先复用已有 worker，少 cancel，少创建并行 worker
+- 当前调试模式下每个 supervisor 最多创建一个 worker
 - background/stalled worker 如果未来还可能有用，优先 `schedule_worker_resume`，不要直接 cancel
 
 supervisor agent 复用第三层 deepagent 运行方式，但使用 supervisor prompt 和 runtime tools。
@@ -144,6 +146,29 @@ supervisor agent 复用第三层 deepagent 运行方式，但使用 supervisor p
 
 第二层只对 `running` worker 做简单卡死检测。`waiting` 和 `background` 是主动挂起状态，不按卡死处理。
 
+## 实时观察 Agent 行为
+
+运行时可以用 `--watch` 查看 Agent 行为事件：
+
+```bash
+PYTHONPATH=src python -m esnext run "你的工作目录是什么" --agent --watch
+PYTHONPATH=src python -m esnext research "复现某篇论文" --mode auto --stage experiment.setup --watch
+```
+
+事件会同时写入：
+
+```text
+.lightscientist/events.jsonl
+```
+
+当前事件覆盖：
+
+- 第一层：stage start / finish / transition / user decision
+- 第二层：worker created / status / supervisor event / supervisor decision / scheduled resume
+- 第三层：agent session start/end / model call/output / tool call/result / waiting/background/cancelled
+
+终端输出只显示可观察行为，不显示隐藏推理。
+
 ## 当前顶层边界
 
 顶层 CLI 现在只负责：
@@ -161,6 +186,33 @@ supervisor agent 复用第三层 deepagent 运行方式，但使用 supervisor p
 也就是说，恢复能力现在只在第二层/第三层和测试里验证，不作为顶层产品接口。
 
 ## 运行
+
+默认模型 API 是 DeepSeek OpenAI-compatible 接口：
+
+```bash
+export DEEPSEEK_API_KEY="你的 DeepSeek API Key"
+```
+
+默认配置：
+
+```text
+BASE_URL=https://api.deepseek.com
+MODEL=deepseek-v4-pro
+THINKING=enabled
+REASONING_EFFORT=high
+```
+
+可以用下面的环境变量覆盖：
+
+```bash
+export LIGHTSCIENTIST_BASE_URL="https://api.deepseek.com"
+export LIGHTSCIENTIST_MODEL="deepseek-v4-flash"
+export LIGHTSCIENTIST_API_KEY="$DEEPSEEK_API_KEY"
+export LIGHTSCIENTIST_THINKING="enabled"
+export LIGHTSCIENTIST_REASONING_EFFORT="high"
+```
+
+如果继续使用 LM Studio 或其他 OpenAI-compatible 服务，只需要覆盖 `LIGHTSCIENTIST_BASE_URL`、`LIGHTSCIENTIST_MODEL`、`LIGHTSCIENTIST_API_KEY`。DeepSeek 专用的 thinking 参数只会在 `api.deepseek.com` endpoint 下发送。
 
 进入最小 REPL：
 
@@ -190,6 +242,7 @@ src/esnext/
 ├── backends.py
 ├── cli.py
 ├── data_models.py
+├── events.py
 ├── executor.py
 ├── manager.py
 ├── minimal_agent.py
@@ -216,6 +269,8 @@ src/esnext/
   OpenAI 兼容模型配置和日志包装
 - `data_models.py`
   共享结构定义
+- `events.py`
+  Agent 行为事件流、JSONL 记录和终端 watch 输出
 - `prompts/`
   worker / supervisor prompt
 
@@ -235,6 +290,7 @@ src/esnext/
 - `cancel -> finish_cancelled`
 - `execute` 子进程取消
 - supervisor worker tools 非阻塞发射
+- `--watch` 实时观察 Agent 行为
 
 还没做：
 

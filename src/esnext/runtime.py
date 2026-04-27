@@ -9,6 +9,7 @@ from pathlib import Path
 from .executor import ExecutionRuntime
 from .minimal_agent import resume_agent_session, start_agent_session
 from .data_models import AgentRecord, AgentSession, ExecutionResult, RuntimeEnvelope, RuntimeTask, RuntimeUpdate, ScheduledResume, SupervisorEvent
+from .events import EventBus
 from .prompts import load_prompt
 
 
@@ -29,8 +30,11 @@ class RuntimeSupervisor:
     def __init__(
         self, executor: ExecutionRuntime | None = None, stall_timeout: float | None = 300.0,
         supervisor_tools: list[object] | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
-        self.executor = executor or ExecutionRuntime()
+        self.event_bus = event_bus or EventBus()
+        self.executor = executor or ExecutionRuntime(event_bus=self.event_bus)
+        self.executor.event_bus = self.event_bus
         self.stall_timeout = stall_timeout
         self.supervisor_tools = supervisor_tools or []
         self._agents: dict[str, AgentRecord] = {}
@@ -70,6 +74,8 @@ class RuntimeSupervisor:
             }
             self._workspace_root = task.workspace_root
             self._waiters[agent_id] = threading.Event()
+        self._emit("task_started", "Runtime supervisor started task.", task_id=task.task_id, stage=task.stage_name)
+        self._emit("worker_created", "Worker created.", task_id=task.task_id, agent_id=agent_id, stage=task.stage_name, output_path=str(output_path))
         self._push_update(agent_id, RuntimeUpdate("running", "Worker created."))
         threading.Thread(target=self._run, args=("start", agent_id, runtime_task), daemon=True, name=f"runtime-start-{agent_id}").start()
         self._waiters[agent_id].wait()
@@ -83,19 +89,21 @@ class RuntimeSupervisor:
         return self._final_result(agent_id)
 
     def _start_worker_async(self, task_id: str, objective: str) -> str:
-        task = self.get_task(task_id)
-        if not task: return f"Unknown task: {task_id}."
-        if task["status"] in {"completed", "failed", "cancelled"}: 
-            return f"Cannot start worker for {task['status']} task."
-        worker_task_id = f"{task_id}-{uuid.uuid4().hex[:4]}"
-        agent_id = f"agent-{worker_task_id}"
-        worker_root = (self._workspace_root or Path.cwd()) / agent_id
-        output_path = worker_root / "agent-run.md"
-        runtime_task = RuntimeTask(worker_task_id, "supervised", objective, output_path, worker_root, objective, True)
         with self._lock:
+            if not self._task or self._task["task_id"] != task_id: return f"Unknown task: {task_id}."
+            if self._task["status"] in {"completed", "failed", "cancelled"}:
+                return f"Cannot start worker for {self._task['status']} task."
+            if self._task.get("worker_ids"):
+                return "This supervisor is limited to one worker. Reuse the existing worker with resume_worker."
+            worker_task_id = f"{task_id}-{uuid.uuid4().hex[:4]}"
+            agent_id = f"agent-{worker_task_id}"
+            worker_root = (self._workspace_root or Path.cwd()) / agent_id
+            output_path = worker_root / "agent-run.md"
+            runtime_task = RuntimeTask(worker_task_id, "supervised", objective, output_path, worker_root, objective, True)
             self._agents[agent_id] = AgentRecord(agent_id, worker_task_id, objective, "running", progress_text="Worker created.", workspace_root=worker_root, output_path=output_path)
             self._task["worker_ids"].append(agent_id)
             self._waiters[agent_id] = threading.Event()
+        self._emit("worker_created", "Worker created.", task_id=worker_task_id, agent_id=agent_id, stage="supervised", output_path=str(output_path))
         self._push_update(agent_id, RuntimeUpdate("running", "Worker created."))
         threading.Thread(target=self._run, args=("start", agent_id, runtime_task), daemon=True, name=f"runtime-start-{agent_id}").start()
         return agent_id
@@ -117,6 +125,7 @@ class RuntimeSupervisor:
             record = self._agents[agent_id]
             if record.status == "cancelled": return "Worker cancelled."
             self._waiters[agent_id] = threading.Event()
+        self._emit("worker_resume_dispatched", "Worker resume dispatched.", task_id=record.task_id, agent_id=agent_id, text=user_input)
         threading.Thread(target=self._run, args=("resume", agent_id, user_input), daemon=True, name=f"runtime-resume-{agent_id}").start()
         return ""
 
@@ -125,6 +134,7 @@ class RuntimeSupervisor:
             record = self._agents.get(agent_id)
             if not record: return ExecutionResult(agent_id.removeprefix("agent-"), "failed", f"Unknown agent session: {agent_id}.", Path.cwd() / "agent-run.md")
             if record.status == "cancelled": return self._results.get(agent_id) or ExecutionResult(record.task_id, "cancelled", "Worker cancelled.", record.output_path or (Path.cwd() / "agent-run.md"))
+        self._emit("worker_cancel_requested", "Worker cancel requested.", task_id=record.task_id, agent_id=agent_id)
         result = self.executor.cancel(agent_id)
         with self._queue_ready:
             self._update_agent(agent_id, RuntimeUpdate("cancelled", "Worker cancelled.", result=result))
@@ -188,17 +198,20 @@ class RuntimeSupervisor:
 
     def _handle_update(self, agent_id: str, update: RuntimeUpdate) -> None:
         if agent_id not in self._agents: return
-        old_status = self._agents[agent_id].status
+        record = self._agents[agent_id]
+        old_status = record.status
         if old_status == "cancelled" and update.status != "cancelled":
             if update.result and agent_id in self._waiters: self._waiters[agent_id].set()
             return
         self._update_agent(agent_id, update)
+        self._emit_worker_update(agent_id, old_status, update)
         should_notify_supervisor = old_status != update.status or update.result is not None
         if should_notify_supervisor:
             result = update.result
             with self._queue_ready:
                 self._supervisor_queue.append(SupervisorEvent(agent_id, update.status, update.text, result.summary if result else "", result.output_path if result else None))
                 self._queue_ready.notify()
+            self._emit("supervisor_event_queued", update.text, task_id=self._agents[agent_id].task_id, agent_id=agent_id, status=update.status)
         if update.result and agent_id in self._waiters: self._waiters[agent_id].set()
 
     # ---------------------------------------------------------------
@@ -210,6 +223,7 @@ class RuntimeSupervisor:
             if not task: return
             session = self._supervisor
             user_input = supervisor_event_input(str(task["objective"]), event)
+            self._emit("supervisor_started", event.text or event.summary, task_id=str(task["task_id"]), agent_id=event.agent_id, status=event.status)
             if session is None:
                 session = start_agent_session(
                     user_input,
@@ -218,11 +232,23 @@ class RuntimeSupervisor:
                     log_path=(self._workspace_root or Path.cwd()) / f"supervisor-{task['task_id']}.log",
                     tools=self._runtime_tools(),
                     include_lifecycle_tools=False,
+                    event_bus=self.event_bus,
+                    event_layer="L2",
+                    event_context={"task_id": str(task["task_id"]), "agent_id": "supervisor"},
                 )
                 self._supervisor = session
                 result = session.last_result
-            else: result = resume_agent_session(session, user_input)
-            if result: self._apply_supervisor_result(result.final_output or "")
+            else:
+                result = resume_agent_session(
+                    session,
+                    user_input,
+                    event_bus=self.event_bus,
+                    event_layer="L2",
+                    event_context={"task_id": str(task["task_id"]), "agent_id": "supervisor"},
+                )
+            if result:
+                self._emit("supervisor_decision", result.final_output or "", task_id=str(task["task_id"]), agent_id="supervisor")
+                self._apply_supervisor_result(result.final_output or "")
         finally:
             with self._queue_ready:
                 self._supervisor_busy = False
@@ -424,6 +450,7 @@ class RuntimeSupervisor:
             record.stalled_action_count = record.progress.action_count
             text = f"Worker stalled. Progress: step_count={record.progress.step_count}, action_count={record.progress.action_count}"
             self._supervisor_queue.append(SupervisorEvent(agent_id, "running", text, kind="stall"))
+            self._emit("worker_stalled", text, task_id=record.task_id, agent_id=agent_id)
         if self._supervisor_queue: self._queue_ready.notify()
 
     # 定时恢复
@@ -434,6 +461,8 @@ class RuntimeSupervisor:
             delay = max(0.0, float(seconds))
             self._scheduled_resumes.append(ScheduledResume(agent_id, time.monotonic() + delay, message))
             self._queue_ready.notify()
+            record = self._agents[agent_id]
+            self._emit("worker_resume_scheduled", message, task_id=record.task_id, agent_id=agent_id, seconds=delay)
             return json.dumps({"status": "scheduled", "agent_id": agent_id, "seconds": delay, "message": message}, ensure_ascii=False)
 
     def _resume_due_workers_locked(self) -> None:
@@ -448,6 +477,7 @@ class RuntimeSupervisor:
             if not record or record.status in {"completed", "failed", "cancelled"}:
                 continue
             self._waiters[item.agent_id] = threading.Event()
+            self._emit("scheduled_resume_due", item.message, task_id=record.task_id, agent_id=item.agent_id)
             threading.Thread(target=self._run, args=("resume", item.agent_id, item.message), daemon=True, name=f"runtime-scheduled-resume-{item.agent_id}").start()
         self._scheduled_resumes = pending
 
@@ -458,3 +488,22 @@ class RuntimeSupervisor:
         result = self._results.get(agent_id) or ExecutionResult(record.task_id, record.status, record.progress_text or "No result.", record.output_path or (Path.cwd() / "agent-run.md"))
         result.notes.extend([f"Agent ID: {agent_id}", f"Final status: {result.status}"])
         return result
+
+    def _emit_worker_update(self, agent_id: str, old_status: str, update: RuntimeUpdate) -> None:
+        record = self._agents[agent_id]
+        progress = update.progress or record.progress
+        kind = "worker_progress" if update.status == "running" and old_status == update.status and not update.result else "worker_status"
+        message = update.text or (update.result.summary if update.result else "")
+        self._emit(
+            kind,
+            message,
+            task_id=record.task_id,
+            agent_id=agent_id,
+            status=update.status,
+            old_status=old_status,
+            step_count=progress.step_count,
+            action_count=progress.action_count,
+        )
+
+    def _emit(self, kind: str, message: str = "", *, task_id: str = "", agent_id: str = "", stage: str = "", **data: object) -> None:
+        self.event_bus.emit("L2", kind, message, task_id=task_id, agent_id=agent_id, stage=stage, **data)

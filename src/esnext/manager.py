@@ -7,14 +7,15 @@ from uuid import uuid4
 
 from .executor import ExecutionResult
 from .data_models import RuntimeTask, StageRequest
+from .events import EventBus
 from .runtime import RuntimeSupervisor
 
 
 class StageManager:
     """Top layer that converts a user request into a runtime task."""
 
-    def __init__(self, runtime_supervisor: RuntimeSupervisor | None = None) -> None:
-        self.runtime_supervisor = runtime_supervisor or RuntimeSupervisor()
+    def __init__(self, runtime_supervisor: RuntimeSupervisor | None = None, event_bus: EventBus | None = None) -> None:
+        self.runtime_supervisor = runtime_supervisor or RuntimeSupervisor(event_bus=event_bus)
 
     def handle(self, request: StageRequest) -> ExecutionResult:
         # TODO: 后期maanager是一个LangGraph状态, 如果外部请求是 询问状态或结果，则不会新建 task(非agent请求)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json, threading
+import importlib
 import time
 from collections import deque
 from pathlib import Path
@@ -12,6 +13,7 @@ from pydantic import ConfigDict, Field
 
 from esnext.backends import CommandProcessRegistry, WorkspaceBackend
 from esnext.cli import main, repl
+from esnext.events import ConsoleEventSink, EventBus, JsonlEventSink
 from esnext.executor import ExecutionRuntime
 from esnext.manager import StageManager
 from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
@@ -228,6 +230,35 @@ def test_copied_skill_dependencies_exist() -> None:
         assert (root / rel).exists(), rel
 
 
+def test_model_config_defaults_to_deepseek(monkeypatch) -> None:
+    monkeypatch.delenv("LIGHTSCIENTIST_BASE_URL", raising=False)
+    monkeypatch.delenv("LIGHTSCIENTIST_MODEL", raising=False)
+    monkeypatch.delenv("LIGHTSCIENTIST_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    import esnext.model_config as model_config
+
+    cfg = importlib.reload(model_config)
+    assert cfg.BASE_URL == "https://api.deepseek.com"
+    assert cfg.MODEL == "deepseek-v4-pro"
+    assert cfg.API_KEY == "test-key"
+    assert cfg.chat_provider_options()["reasoning_effort"] == "high"
+
+
+def test_model_config_does_not_send_deepseek_options_to_other_endpoints(monkeypatch) -> None:
+    monkeypatch.setenv("LIGHTSCIENTIST_BASE_URL", "http://localhost:1234/v1")
+    monkeypatch.setenv("LIGHTSCIENTIST_MODEL", "local-model")
+    monkeypatch.setenv("LIGHTSCIENTIST_API_KEY", "local-key")
+    import esnext.model_config as model_config
+
+    cfg = importlib.reload(model_config)
+    assert cfg.BASE_URL == "http://localhost:1234/v1"
+    assert cfg.MODEL == "local-model"
+    assert cfg.API_KEY == "local-key"
+    assert cfg.chat_provider_options() == {}
+
+
 def test_research_controller_runs_one_stage_and_advances(tmp_path: Path, monkeypatch) -> None:
     patch_scripted_model(
         monkeypatch,
@@ -419,7 +450,7 @@ def test_cli_research_can_reply_to_manual_gate(tmp_path: Path, monkeypatch) -> N
 
 def test_cli_run_uses_default_output_path(tmp_path: Path, capsys, monkeypatch) -> None:
     manager = make_agent_manager(monkeypatch, tmp_path, "answer: Done.")
-    monkeypatch.setattr("esnext.cli.StageManager", lambda: manager)
+    monkeypatch.setattr("esnext.cli.StageManager", lambda **_: manager)
     exit_code = main(["run", "Try and stop cleanly.", "--workspace", str(tmp_path), "--agent"])
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -437,6 +468,36 @@ def test_repl_runs_until_quit(tmp_path: Path, capsys, monkeypatch) -> None:
     assert "LightScientist REPL" in captured.out
     assert "status: completed" in captured.out
     assert any(tmp_path.glob("agent-*/agent-run.md"))
+
+
+def test_event_bus_writes_jsonl_and_console(tmp_path: Path, capsys) -> None:
+    bus = EventBus([JsonlEventSink(tmp_path / "events.jsonl"), ConsoleEventSink()])
+    bus.emit("L3", "tool_call", "execute echo hi", task_id="task1", agent_id="agent-task1", tool="execute")
+    captured = capsys.readouterr()
+    raw = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
+    event = json.loads(raw)
+    assert "[L3 tool_call] task1 agent-task1 execute echo hi" in captured.out
+    assert event["type"] == "tool_call"
+    assert event["layer"] == "L3"
+    assert event["tool"] == "execute"
+
+
+def test_cli_run_watch_prints_agent_events(tmp_path: Path, capsys, monkeypatch) -> None:
+    patch_scripted_model(
+        monkeypatch,
+        "tool: printf 'hello from watched agent'",
+        "answer: Done.",
+        supervisor_replies=("answer: TASK_COMPLETED: watched.",),
+        scope_root=tmp_path,
+    )
+    exit_code = main(["run", "Say hello", "--workspace", str(tmp_path), "--agent", "--watch"])
+    captured = capsys.readouterr()
+    events = (tmp_path / ".lightscientist/events.jsonl").read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert "[L2 worker_created]" in captured.out
+    assert "[L3 tool_call]" in captured.out
+    assert '"type": "tool_result"' in events
+    assert '"type": "worker_status"' in events
 
 
 def test_minimal_agent_run_handles_command_and_final_answer(tmp_path: Path) -> None:
@@ -743,6 +804,20 @@ def test_runtime_supervisor_tools_dispatch_workers_without_waiting(tmp_path: Pat
     result = json.loads(raw)
     assert result["status"] == "accepted"
     assert result["agent_id"] in supervisor._agents
+
+
+def test_runtime_supervisor_allows_only_one_worker(tmp_path: Path, monkeypatch) -> None:
+    supervisor = RuntimeSupervisor()
+    supervisor._task = {"task_id": "tasksingle", "objective": "objective", "worker_ids": [], "status": "running", "summary": ""}
+    supervisor._workspace_root = tmp_path
+    monkeypatch.setattr(supervisor, "_run", lambda mode, agent_id, arg: time.sleep(0.5))
+    tools = {tool.name: tool for tool in supervisor._runtime_tools()}
+    first = json.loads(tools["start_worker"].invoke({"objective": "do work"}))
+    second = json.loads(tools["start_worker"].invoke({"objective": "do more work"}))
+    assert first["status"] == "accepted"
+    assert second["status"] == "failed"
+    assert "limited to one worker" in second["summary"]
+    assert len(supervisor._agents) == 1
 
 
 def test_supervisor_prompt_adds_status_specific_guidance() -> None:

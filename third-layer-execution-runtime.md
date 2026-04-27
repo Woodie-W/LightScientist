@@ -165,6 +165,24 @@ The current design is:
 - backend tool activity increments progress
 - the second layer receives a lightweight structured progress snapshot instead of reconstructing progress from logs
 
+The third layer also emits observable `AgentEvent`s for live watch output.
+
+Current third-layer watch events include:
+
+- `agent_session_start`
+- `agent_session_end`
+- `model_call`
+- `model_output`
+- `model_final`
+- `tool_call`
+- `tool_result`
+- `agent_waiting`
+- `agent_background`
+- `agent_cancelled`
+- `agent_session_failed`
+
+These events are a debugging and visibility channel. The actual runtime still uses `RuntimeUpdate` and `ExecutionResult` for control.
+
 ## Logging And Output Files
 
 Each worker keeps:

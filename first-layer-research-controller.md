@@ -54,6 +54,8 @@ PROCESS.md
 
 `events.jsonl` is append-only and records stage start, finish, transition, gate waiting, and user replies.
 
+The file now uses the shared `AgentEvent` stream. First-layer events keep the same high-level meaning, but also include `layer: "L1"` and optional readable messages for CLI watch output.
+
 `PROCESS.md` is the lightweight long-term project memory. The first layer appends one concise entry after each successful stage delivery so later stages can quickly read project history without replaying all logs.
 
 ## Stage Table
@@ -179,6 +181,12 @@ Meaning:
 - `request_user_decision` asks the CLI user a project-level question.
 
 The first layer does not expose a direct `set_stage` tool.
+
+The tool calls are also logged as observable events:
+
+- `finish_stage_called`
+- `user_decision_requested`
+- `user_decision_rejected`
 
 ## Manual And Auto Modes
 

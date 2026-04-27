@@ -103,6 +103,24 @@ Current rule:
 
 That keeps the supervisor from being spammed by every minor step.
 
+In addition to control events, the second layer also emits observable `AgentEvent`s through `EventBus`.
+
+Current second-layer watch events include:
+
+- `task_started`
+- `worker_created`
+- `worker_progress`
+- `worker_status`
+- `supervisor_event_queued`
+- `supervisor_started`
+- `supervisor_decision`
+- `worker_resume_dispatched`
+- `worker_resume_scheduled`
+- `scheduled_resume_due`
+- `worker_stalled`
+
+These events are for logs and CLI watch output only. They do not change the supervisor control rules.
+
 ## Supervisor Queue Model
 
 The second layer uses two queues:

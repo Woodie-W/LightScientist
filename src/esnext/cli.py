@@ -8,6 +8,7 @@ from typing import Sequence
 
 from .manager import StageManager
 from .data_models import ExecutionResult, StageRequest
+from .events import ConsoleEventSink, EventBus, JsonlEventSink
 from .research_controller import ResearchController
 
 OK_STATES = {"completed", "waiting", "background"}
@@ -32,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Workspace root used to resolve relative task paths.",
     )
     run_parser.add_argument("--agent", action="store_true", help="Send the target to the minimal agent runtime.")
+    run_parser.add_argument("--watch", action="store_true", help="Print live agent events while the task runs.")
 
     research_parser = subparsers.add_parser("research", help="Run one first-layer research stage.")
     research_parser.add_argument("topic", nargs="?", default="", help="Research goal or task description used when initializing a project.")
@@ -39,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     research_parser.add_argument("--mode", choices=["auto", "manual"], default="manual", help="Gate mode for phase transitions.")
     research_parser.add_argument("--stage", default="idea.survey", help="Starting stage for a new project, e.g. idea.survey or experiment.setup.")
     research_parser.add_argument("--reply", help="Reply to a pending manual decision with `y [note]` or `n [note]`.")
+    research_parser.add_argument("--watch", action="store_true", help="Print live agent events while the research controller runs.")
     return parser
 
 
@@ -68,6 +71,14 @@ def run_once(
     return 0 if result.status in OK_STATES else 1
 
 
+def build_event_bus(workspace: str | Path, watch: bool = False) -> EventBus:
+    path = Path(workspace).resolve() / ".lightscientist" / "events.jsonl"
+    sinks = [JsonlEventSink(path)]
+    if watch:
+        sinks.append(ConsoleEventSink())
+    return EventBus(sinks)
+
+
 def repl(manager: StageManager | None = None, workspace: str | Path = ".") -> int:
     manager = manager or StageManager()
     print("LightScientist REPL. Type `exit` or `quit` to leave.")
@@ -94,9 +105,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "research":
-        controller = ResearchController(args.workspace, topic=args.topic, mode=args.mode, start_stage=args.stage)
+        event_bus = build_event_bus(args.workspace, args.watch)
+        controller = ResearchController(args.workspace, topic=args.topic, mode=args.mode, start_stage=args.stage, event_bus=event_bus)
         result = controller.reply_user(args.reply) if args.reply else controller.run()
         print_result(result)
         return 0 if result.status in OK_STATES else 1
     if args.command != "run": parser.error(f"Unsupported command: {args.command}")
-    return run_once(StageManager(), args.target, workspace=args.workspace, output=args.output, use_agent=args.agent)
+    event_bus = build_event_bus(args.workspace, args.watch)
+    return run_once(StageManager(event_bus=event_bus), args.target, workspace=args.workspace, output=args.output, use_agent=args.agent)

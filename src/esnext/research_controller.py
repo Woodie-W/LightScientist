@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .data_models import ExecutionResult, ResearchMode, ResearchState, RuntimeTask
+from .events import EventBus, JsonlEventSink
 from .research_stages import PHASE_DESCRIPTIONS, stage_spec
 from .runtime import RuntimeSupervisor
 
@@ -19,12 +20,14 @@ class ResearchController:
         start_stage: str = "idea.survey",
         decision_timeout: float = 3.0,
         supervisor_factory: Callable[[], RuntimeSupervisor] | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).resolve()
         self.state_dir = self.workspace_root / ".lightscientist"
         self.state_path = self.state_dir / "project_state.json"
         self.events_path = self.state_dir / "events.jsonl"
         self.process_path = self.workspace_root / "PROCESS.md"
+        self.event_bus = event_bus or EventBus([JsonlEventSink(self.events_path)])
         self.decision_timeout = decision_timeout
         self.supervisor_factory = supervisor_factory
         self._stage_decision: dict[str, str] = {}
@@ -59,7 +62,7 @@ class ResearchController:
         self._save_state()
         self._append_event("stage_started", stage=self.state.stage, task_id=task_id)
         self._stage_decision = {}
-        supervisor = self.supervisor_factory() if self.supervisor_factory else RuntimeSupervisor(supervisor_tools=self._stage_tools())
+        supervisor = self.supervisor_factory() if self.supervisor_factory else RuntimeSupervisor(supervisor_tools=self._stage_tools(), event_bus=self.event_bus)
         result = supervisor.start(RuntimeTask(task_id, self.state.stage, prompt, run_output, self.workspace_root, prompt, True, False))
         stage_status, stage_summary, stage_output, next_stage = self._read_stage_decision(supervisor, task_id, result.summary)
         output_path = self._path(stage_output or spec.output_path)
@@ -183,6 +186,7 @@ Rules:
                 "output_path": output_path,
                 "next_stage": next_stage,
             }
+            self._append_event("finish_stage_called", stage=self.state.stage, status=normalized, output_path=output_path, next_stage=next_stage, summary=summary)
             return json.dumps({"status": "accepted", "stage_status": normalized}, ensure_ascii=False)
 
         @tool("request_user_decision", parse_docstring=True)
@@ -201,9 +205,11 @@ Rules:
                 JSON result indicating whether the request was accepted.
             """
             if self.state.mode == "auto":
+                self._append_event("user_decision_rejected", stage=self.state.stage, question=question, reason="auto mode")
                 return json.dumps({"status": "rejected", "reason": "auto mode; avoid user interruption"}, ensure_ascii=False)
             text = question if not options else f"{question}\nOptions: {options}"
             self._stage_decision = {"status": "blocked", "summary": text, "output_path": "", "next_stage": ""}
+            self._append_event("user_decision_requested", stage=self.state.stage, question=question, options=options)
             return json.dumps({"status": "waiting_user", "question": text}, ensure_ascii=False)
 
         return [finish_stage_tool, request_user_decision_tool]
@@ -315,10 +321,19 @@ Rules:
         self.state_path.write_text(json.dumps(self.state.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def _append_event(self, event_type: str, **data: object) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        event = {"type": event_type, "time": time.time(), **data}
-        with self.events_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        payload = dict(data)
+        stage = str(payload.pop("stage", getattr(getattr(self, "state", None), "stage", "")) or "")
+        task_id = str(payload.pop("task_id", getattr(getattr(self, "state", None), "current_task_id", "")) or "")
+        self.event_bus.emit("L1", event_type, self._event_message(event_type, payload), stage=stage, task_id=task_id, **payload)
+
+    def _event_message(self, event_type: str, data: dict[str, object]) -> str:
+        if event_type == "stage_transition":
+            return f"{data.get('from', '')} -> {data.get('to', '')}"
+        if event_type in {"stage_started", "stage_finished", "stage_failed", "stage_blocked", "stage_suspended"}:
+            return str(data.get("summary") or data.get("reason") or data.get("question") or data.get("status") or "")
+        if event_type in {"finish_stage_called", "user_decision_requested", "user_decision_rejected"}:
+            return str(data.get("summary") or data.get("question") or data.get("reason") or "")
+        return ""
 
     def _phase2_state(self) -> dict[str, object]:
         research_md = self.workspace_root / "research.md"

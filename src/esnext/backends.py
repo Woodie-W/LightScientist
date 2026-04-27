@@ -9,6 +9,8 @@ from deepagents.backends.protocol import ExecuteResponse
 from langchain.tools import tool
 from langgraph.types import interrupt
 
+from .events import EventBus
+
 # ---------------------------------------------------------------
 # 基础配置
 # ---------------------------------------------------------------
@@ -190,47 +192,80 @@ class LoggingWorkspaceBackend(WorkspaceBackend):
     def __init__(
         self, *, trace: Any, log_path: Path, root_dir: Path, timeout: int = 30,
         process_registry: CommandProcessRegistry | None = None,
+        event_bus: EventBus | None = None,
+        event_layer: str = "L3",
+        event_context: dict[str, object] | None = None,
     ) -> None:
         super().__init__(root_dir=root_dir, timeout=timeout, env=ENV, inherit_env=False, process_registry=process_registry)
         self.trace, self.log_path = trace, log_path
+        self.event_bus, self.event_layer = event_bus, event_layer
+        self.event_context = dict(event_context or {})
 
     def _log_backend_output(self, name: str, output: Any) -> None:
         body = output if isinstance(output, str) else str(output)
         self.trace.action_count += 1
         self.trace.command_outputs.append(f"[{name}]\n{body}")
         log_step(self.log_path, f"step-{self.trace.step_count}-{name}-output", body)
+        self._emit("tool_result", body, tool=name)
+
+    def _emit_tool_call(self, name: str, **data: object) -> None:
+        detail = ", ".join(f"{key}={value}" for key, value in data.items() if value not in {None, ""})
+        self._emit("tool_call", f"{name}({detail})" if detail else name, tool=name, **data)
+
+    def _emit(self, kind: str, message: str, **data: object) -> None:
+        if not self.event_bus: return
+        context = dict(self.event_context)
+        self.event_bus.emit(
+            self.event_layer,
+            kind,
+            message,
+            task_id=str(context.pop("task_id", "")),
+            agent_id=str(context.pop("agent_id", "")),
+            stage=str(context.pop("stage", "")),
+            step_count=self.trace.step_count,
+            action_count=self.trace.action_count,
+            **context,
+            **data,
+        )
 
     def ls(self, path: str):
+        self._emit_tool_call("ls", path=path)
         result = super().ls(path)
         self._log_backend_output("ls", result)
         return result
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000):
+        self._emit_tool_call("read_file", file_path=file_path, offset=offset, limit=limit)
         result = super().read(file_path, offset=offset, limit=limit)
         self._log_backend_output("read_file", result)
         return result
 
     def write(self, file_path: str, content: str):
+        self._emit_tool_call("write_file", file_path=file_path, bytes=len(content.encode("utf-8")))
         result = super().write(file_path, content)
         self._log_backend_output("write_file", result)
         return result
 
     def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False):
+        self._emit_tool_call("edit_file", file_path=file_path, replace_all=replace_all)
         result = super().edit(file_path, old_string, new_string, replace_all=replace_all)
         self._log_backend_output("edit_file", result)
         return result
 
     def glob(self, pattern: str, path: str = "/"):
+        self._emit_tool_call("glob", pattern=pattern, path=path)
         result = super().glob(pattern, path=path)
         self._log_backend_output("glob", result)
         return result
 
     def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        self._emit_tool_call("grep", pattern=pattern, path=path or "", glob=glob or "")
         result = super().grep(pattern, path=path, glob=glob)
         self._log_backend_output("grep", result)
         return result
 
     def execute(self, command: str, *, timeout: int | None = None):
+        self._emit_tool_call("execute", command=command, timeout=timeout)
         result = super().execute(command, timeout=timeout)
         self._log_backend_output("execute", result.output)
         return result

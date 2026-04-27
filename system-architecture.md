@@ -28,6 +28,18 @@ Two agent layers use the model API:
 
 The first layer is deterministic code.
 
+The default model endpoint is DeepSeek's OpenAI-compatible API:
+
+```text
+BASE_URL=https://api.deepseek.com
+MODEL=deepseek-v4-pro
+API_KEY from DEEPSEEK_API_KEY or LIGHTSCIENTIST_API_KEY
+thinking=enabled
+reasoning_effort=high
+```
+
+Other OpenAI-compatible services can still be selected with `LIGHTSCIENTIST_BASE_URL`, `LIGHTSCIENTIST_MODEL`, and `LIGHTSCIENTIST_API_KEY`.
+
 ## Responsibilities By Layer
 
 ### Layer 1
@@ -196,6 +208,46 @@ Supervisor-relevant events are:
 - final results
 - cancellations
 - stall detection events
+
+## Observable Agent Events
+
+The runtime also has a side-channel event stream for watching Agent behavior.
+
+This stream is observational only. It does not drive control flow.
+
+Core pieces:
+
+- `AgentEvent`
+- `EventBus`
+- `JsonlEventSink`
+- `ConsoleEventSink`
+
+Events are written to:
+
+```text
+.lightscientist/events.jsonl
+```
+
+When CLI `--watch` is enabled, the same events are printed live.
+
+Example:
+
+```text
+[L1 stage_started] idea.survey stage-idea-survey
+[L2 worker_created] stage-idea-survey agent-stage-idea-survey Worker created.
+[L3 model_call] stage-idea-survey agent-stage-idea-survey Step 1: querying model.
+[L3 tool_call] stage-idea-survey agent-stage-idea-survey execute(command=...)
+[L3 tool_result] stage-idea-survey agent-stage-idea-survey ...
+[L2 supervisor_decision] stage-idea-survey supervisor TASK_COMPLETED: ...
+```
+
+Current observed event families:
+
+- Layer 1: stage lifecycle and user-decision events
+- Layer 2: worker records, supervisor queue, decisions, stall and scheduled resume events
+- Layer 3: session lifecycle, model calls, model outputs, tool calls, tool results, waiting/background/cancelled events
+
+The detailed third-layer debug log remains `agent-debug.log`.
 
 ## Background And Waiting
 
