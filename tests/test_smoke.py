@@ -16,7 +16,7 @@ from esnext.cli import main, repl
 from esnext.events import ConsoleEventSink, EventBus, JsonlEventSink
 from esnext.executor import ExecutionRuntime
 from esnext.manager import StageManager
-from esnext.minimal_agent import _status_from_output, resume_agent_session, run_agent, start_agent_session
+from esnext.minimal_agent import _recursion_limit, _status_from_output, resume_agent_session, run_agent, start_agent_session
 from esnext.data_models import RuntimeTask, RuntimeUpdate, StageRequest, SupervisorEvent
 from esnext.research_controller import ResearchController
 from esnext.research_stages import STAGES, stage_spec
@@ -173,7 +173,8 @@ def test_research_controller_builds_stage_prompt(tmp_path: Path) -> None:
     controller = ResearchController(tmp_path, topic="seed scheduling", mode="auto")
     prompt = controller.build_stage_prompt()
     assert "Current stage: idea.survey" in prompt
-    assert f"Skill to read first: {stage_spec('idea.survey').skill_path}" in prompt
+    assert "Skill to read first: .lightscientist/skills/idea.survey.md" in prompt
+    assert (tmp_path / ".lightscientist/skills/idea.survey.md").exists()
     assert "Read `PROCESS.md` first" in prompt
     assert "phase1-idea/LITERATURE_SURVEY.md" in prompt
     assert "idea -> experiment -> paper -> done" in prompt
@@ -194,7 +195,7 @@ def test_research_controller_can_start_from_selected_stage(tmp_path: Path) -> No
     assert state["phase"] == "experiment"
     assert state["stage"] == "experiment.setup"
     assert "Project topic:\nreproduce paper X" in prompt
-    assert f"Skill to read first: {stage_spec('experiment.setup').skill_path}" in prompt
+    assert "Skill to read first: .lightscientist/skills/experiment.setup.md" in prompt
 
 
 def test_research_controller_builds_experiment_prompt_with_phase2_state(tmp_path: Path) -> None:
@@ -226,8 +227,49 @@ def test_copied_skill_dependencies_exist() -> None:
         "tools/coverage.py",
         "tools/crash.py",
         "templates/fuzz_experiment.sh.tmpl",
-    ):
+        ):
         assert (root / rel).exists(), rel
+
+
+def test_workspace_backend_rejects_absolute_read_path(tmp_path: Path) -> None:
+    backend = WorkspaceBackend(root_dir=tmp_path)
+    result = backend.read("/data/moew/CORAL/examples/meow/task.yaml")
+    assert result.error is not None
+    assert "Absolute paths are not allowed" in result.error
+
+
+def test_workspace_backend_keeps_relative_write_in_workspace(tmp_path: Path) -> None:
+    backend = WorkspaceBackend(root_dir=tmp_path)
+    result = backend.write("inside.txt", "ok")
+    assert result.error is None
+    assert (tmp_path / "inside.txt").read_text(encoding="utf-8") == "ok"
+
+
+def test_workspace_backend_rejects_absolute_write_path(tmp_path: Path) -> None:
+    backend = WorkspaceBackend(root_dir=tmp_path)
+    result = backend.write("/data/moew/phase3-paper/PAPER_PLAN.md", "bad")
+    assert result.error is not None
+    assert "Absolute write paths are not allowed" in result.error
+
+
+def test_workspace_backend_rejects_absolute_edit_path(tmp_path: Path) -> None:
+    backend = WorkspaceBackend(root_dir=tmp_path)
+    result = backend.edit("/data/moew/phase3-paper/PAPER_PLAN.md", "a", "b")
+    assert result.error is not None
+    assert "Absolute edit paths are not allowed" in result.error
+
+
+def test_workspace_backend_allows_relative_read_via_workspace_symlink(tmp_path: Path) -> None:
+    source = tmp_path / "source_task"
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "task.yaml").write_text("task: ok\n", encoding="utf-8")
+    source.symlink_to(target, target_is_directory=True)
+    backend = WorkspaceBackend(root_dir=tmp_path)
+    result = backend.read("source_task/task.yaml")
+    assert result.error is None
+    assert result.file_data
+    assert "task: ok" in result.file_data["content"]
 
 
 def test_model_config_defaults_to_deepseek(monkeypatch) -> None:
@@ -257,6 +299,56 @@ def test_model_config_does_not_send_deepseek_options_to_other_endpoints(monkeypa
     assert cfg.MODEL == "local-model"
     assert cfg.API_KEY == "local-key"
     assert cfg.chat_provider_options() == {}
+
+
+def test_default_max_steps_is_unlimited(monkeypatch) -> None:
+    monkeypatch.delenv("LIGHTSCIENTIST_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    import esnext.model_config as model_config
+
+    cfg = importlib.reload(model_config)
+    assert cfg.LoggingChatOpenAI.model_fields["max_steps"].default == 0
+    assert _recursion_limit(0) == 10_000
+
+
+def test_model_config_deepseek_adapter_patches_reasoning_into_request(monkeypatch) -> None:
+    monkeypatch.delenv("LIGHTSCIENTIST_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.setenv("DEEPSEEK_THINKING", "enabled")
+    import esnext.model_config as model_config
+
+    cfg = importlib.reload(model_config)
+    adapter = cfg.provider_adapter()
+    payload = [{"role": "assistant", "content": "", "tool_calls": [{"id": "1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]}]
+    source = [AIMessage(content="", tool_calls=[{"name": "read_file", "args": {}, "id": "1", "type": "tool_call"}], additional_kwargs={"reasoning_content": "think-1"})]
+    patched = adapter.patch_request_messages(payload, source)
+    assert patched[0]["reasoning_content"] == "think-1"
+
+
+def test_model_config_deepseek_adapter_extracts_reasoning_from_response(monkeypatch) -> None:
+    monkeypatch.delenv("LIGHTSCIENTIST_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.setenv("DEEPSEEK_THINKING", "enabled")
+    import esnext.model_config as model_config
+
+    cfg = importlib.reload(model_config)
+    adapter = cfg.provider_adapter()
+    result = ChatResult(generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[]))])
+    patched = adapter.patch_chat_result(result, {"choices": [{"message": {"role": "assistant", "content": "", "reasoning_content": "think-2"}}]})
+    assert patched.generations[0].message.additional_kwargs["reasoning_content"] == "think-2"
+
+
+def test_model_config_deepseek_adapter_uses_pending_reasoning_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("LIGHTSCIENTIST_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.setenv("DEEPSEEK_THINKING", "enabled")
+    import esnext.model_config as model_config
+
+    cfg = importlib.reload(model_config)
+    adapter = cfg.provider_adapter()
+    payload = [{"role": "assistant", "content": None, "tool_calls": [{"id": "1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]}]
+    patched = adapter.patch_request_messages(payload, [AIMessage(content="", tool_calls=[])], "think-3")
+    assert patched[0]["reasoning_content"] == "think-3"
 
 
 def test_research_controller_runs_one_stage_and_advances(tmp_path: Path, monkeypatch) -> None:

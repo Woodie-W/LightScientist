@@ -55,6 +55,7 @@ class ResearchController:
         task_id = self.state.current_task_id or f"stage-{self.state.stage.replace('.', '-')}"
         prompt = self.build_stage_prompt()
         run_output = self.state_dir / "stage-runs" / task_id / "agent-run.md"
+        if run_output.exists(): run_output.unlink()
         self.state.status = "running"
         self.state.current_task_id = task_id
         self.state.phase = spec.phase
@@ -111,7 +112,7 @@ class ResearchController:
         spec = stage_spec(self.state.stage)
         phase_lines = "\n".join(f"- {line}" for line in PHASE_DESCRIPTIONS.get(spec.phase, ()))
         allowed = "\n".join(f"- {name}" for name in spec.allowed_next)
-        skill_line = f"Skill to read first: {spec.skill_path}" if spec.skill_path else "No skill file for this gate stage."
+        skill_line = f"Skill to read first: {self._stage_skill_path(spec)}" if spec.skill_path else "No skill file for this gate stage."
         feedback = f"\nLatest user feedback:\n{self.state.user_feedback}\n" if self.state.user_feedback else "\n"
         phase2_state = f"\nPhase 2 state:\n{self._phase2_state_text()}\n" if spec.phase == "experiment" else "\n"
         return f"""You are the second-layer supervisor for one research stage.
@@ -148,8 +149,11 @@ Allowed next stages:
 Rules:
 - Work only on the current stage.
 - If a skill path is provided, read that SKILL.md before acting.
+- Use only workspace-visible paths such as `PROCESS.md`, `source_task/...`, `source_seed/...`, `source_results/...`, and `phase*/...`.
+- Do not read from `/`, `/data`, `/home`, or any other absolute filesystem path.
 - Do not edit .lightscientist/project_state.json directly.
 - Write the required output file before reporting completion.
+- When writing workspace artifacts, always use workspace-relative paths such as `{spec.output_path}`. Do not use absolute paths for stage deliverables.
 - When the stage is completed, failed, or blocked, call finish_stage.
 - Use request_user_decision only for project-level decisions that cannot be answered from files or workers.
 - In auto mode, avoid user interruption; decide from available evidence or finish the stage as failed.
@@ -405,6 +409,14 @@ Rules:
             lines.append("- Extra files: research.md, research.jsonl, phase2-experiment/worklog.md")
         with self.process_path.open("a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n\n")
+
+    def _stage_skill_path(self, spec) -> str:
+        if not spec.skill_path:
+            return ""
+        target = self.state_dir / "skills" / f"{spec.name}.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(Path(spec.skill_path).read_text(encoding="utf-8"), encoding="utf-8")
+        return str(target.relative_to(self.workspace_root)).replace("\\", "/")
 
     def _path(self, value: str) -> Path:
         path = Path(value) if value else self.workspace_root / "research-result.md"

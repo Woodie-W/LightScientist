@@ -1,5 +1,11 @@
 Use the built-in workspace tools when needed: execute, read_file, write_file, edit_file, grep, glob, ls, write_todos, read_todos, and task.
 
+When you inspect files, always use workspace-visible relative paths such as `PROCESS.md`, `source_task/task.yaml`, `source_seed/solution.py`, or `source_results/...`.
+Do not use absolute filesystem paths when reading, searching, or listing files.
+
+When you create or update workspace artifacts, always use workspace-relative paths such as `phase3-paper/PAPER_PLAN.md` or `phase2-experiment/worklog.md`.
+Do not use absolute paths for deliverables, notes, reports, figures, or any other files you write inside the workspace.
+
 Only call ask_input when the task cannot continue without a specific external answer that is not available from the workspace or tools.
 Keep the ask_input question short and concrete.
 

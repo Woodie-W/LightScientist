@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents.backends import LocalShellBackend
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, GrepResult, LsResult, ReadResult, WriteResult
 from langchain.tools import tool
 from langgraph.types import interrupt
 
@@ -132,6 +132,45 @@ class WorkspaceBackend(LocalShellBackend):
                     key = "/" + Path(key).name
                 break
         return super()._resolve_path(key)
+
+    def _normalize_read_key(self, key: str, *, allow_root: bool = False) -> tuple[str | None, str | None]:
+        if not os.path.isabs(key):
+            return key, None
+        if allow_root and key == "/":
+            return "/", None
+        return None, f"Absolute paths are not allowed: '{key}'. Use a workspace-relative path such as 'source_task/task.yaml'."
+
+    def ls(self, path: str):
+        path, error = self._normalize_read_key(path, allow_root=True)
+        return LsResult(error=error) if error else super().ls(path)
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000):
+        file_path, error = self._normalize_read_key(file_path)
+        return ReadResult(error=error) if error else super().read(file_path, offset=offset, limit=limit)
+
+    def glob(self, pattern: str, path: str = "/"):
+        path, error = self._normalize_read_key(path, allow_root=True)
+        if error:
+            return GlobResult(error=error)
+        if os.path.isabs(pattern):
+            return GlobResult(error=f"Absolute glob patterns are not allowed: '{pattern}'. Use a workspace-relative pattern.")
+        return super().glob(pattern, path=path)
+
+    def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        if path is None:
+            return super().grep(pattern, path=path, glob=glob)
+        path, error = self._normalize_read_key(path, allow_root=True)
+        return GrepResult(error=error) if error else super().grep(pattern, path=path, glob=glob)
+
+    def write(self, file_path: str, content: str):
+        if os.path.isabs(file_path):
+            return WriteResult(error=f"Absolute write paths are not allowed: '{file_path}'. Use a workspace-relative path such as 'phase3-paper/PAPER_PLAN.md'.")
+        return super().write(file_path, content)
+
+    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False):
+        if os.path.isabs(file_path):
+            return EditResult(error=f"Absolute edit paths are not allowed: '{file_path}'. Use a workspace-relative path.")
+        return super().edit(file_path, old_string, new_string, replace_all=replace_all)
 
     def execute(self, command: str, *, timeout: int | None = None):
         command = _convert_virtual_paths(command, self._workspace_name)

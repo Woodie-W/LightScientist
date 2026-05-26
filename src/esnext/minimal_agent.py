@@ -20,7 +20,7 @@ SYS = load_prompt("worker")
 
 
 def start_agent_session(
-    goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
+    goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 0, system_prompt: str = SYS,
     status_cb: Callable[[RuntimeUpdate], None] | None = None, log_path: str | Path | None = None, tools: list[Any] | None = None,
     include_lifecycle_tools: bool = True, event_bus: EventBus | None = None, event_layer: str = "L3",
     event_context: dict[str, object] | None = None,
@@ -31,7 +31,7 @@ def start_agent_session(
 
 
 def create_agent_session(
-    *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
+    *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 0, system_prompt: str = SYS,
     log_path: str | Path | None = None, tools: list[Any] | None = None, include_lifecycle_tools: bool = True,
 ) -> AgentSession:
     wd = Path(cwd).resolve() if cwd else Path.cwd()
@@ -70,7 +70,7 @@ def resume_agent_session(
     try:
         payload: Any = {"messages": [{"role": "user", "content": user_input}]}
         if is_waiting_resume: payload = Command(resume=user_input)
-        result = agent.invoke(payload, config={"configurable": {"thread_id": session.thread_id}, "recursion_limit": session.max_steps * 8 + 20})
+        result = agent.invoke(payload, config={"configurable": {"thread_id": session.thread_id}, "recursion_limit": _recursion_limit(session.max_steps)})
     except Exception as e:
         trace.status, trace.error = "failed", str(e)
         log_step(session.log_path, "run-end", f"status: failed\nstep: {trace.step_count}\nmessage: {e}")
@@ -126,7 +126,16 @@ def _to_msg(msg: BaseMessage) -> dict[str, str] | None:
 
 
 def _dump_msg(msg: AIMessage) -> str:
-    return json.dumps({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls}, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": msg.tool_calls,
+            "reasoning_content": msg.additional_kwargs.get("reasoning_content", ""),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _final_from_result(result: Any) -> str:
@@ -164,12 +173,16 @@ def _emit_event(event_bus: EventBus | None, layer: str, kind: str, message: str,
     )
 
 
+def _recursion_limit(max_steps: int) -> int:
+    return max_steps * 8 + 20 if max_steps > 0 else 10_000
+
+
 
 # ---------------------------------------------------------------
 # 下面是非正式代码，测试用
 # ---------------------------------------------------------------
 def run_agent(
-    goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 8, system_prompt: str = SYS,
+    goal: str, *, cwd: str | Path | None = None, model: str = MODEL, max_steps: int = 0, system_prompt: str = SYS,
     status_cb: Callable[[RuntimeUpdate], None] | None = None, log_path: str | Path | None = None,
 ) -> AgentRunResult:
     session = start_agent_session(goal, cwd=cwd, model=model, max_steps=max_steps, system_prompt=system_prompt, status_cb=status_cb, log_path=log_path)

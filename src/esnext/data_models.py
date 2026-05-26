@@ -318,6 +318,7 @@ class RunTrace(HasAgentSessionInfo, HasAgentProgress):
     info: AgentSessionInfo
     status: Literal["running", "waiting", "background", "completed", "failed", "cancelled"] = "running"
     progress: AgentProgress = field(default_factory=AgentProgress)
+    pending_reasoning_content: str = ""
     last_model_output: str = ""
     last_action: str = ""
     final_output: str = ""
