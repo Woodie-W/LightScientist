@@ -8,13 +8,15 @@
 2. 第二层：运行状态管理层
 3. 第三层：能力执行层
 
-架构文档：
+架构文档（见 [`docs/`](docs/)）：
 
-- `system-architecture.md`
-- `first-layer-research-controller.md`
-- `second-layer-runtime-supervisor.md`
-- `third-layer-execution-runtime.md`
-- `server-reproduction-debug-manual.md`
+- [`docs/system-architecture.md`](docs/system-architecture.md)
+- [`docs/lightscientist-architecture.svg`](docs/lightscientist-architecture.svg)
+- [`docs/first-layer-research-controller.md`](docs/first-layer-research-controller.md)
+- [`docs/second-layer-runtime-supervisor.md`](docs/second-layer-runtime-supervisor.md)
+- [`docs/third-layer-execution-runtime.md`](docs/third-layer-execution-runtime.md)
+- [`docs/server-reproduction-debug-manual.md`](docs/server-reproduction-debug-manual.md)
+- [`docs/lightscientist-webui-design.md`](docs/lightscientist-webui-design.md)
 
 ## 当前第三层
 

@@ -315,6 +315,7 @@ Those limits are deliberate. The current system prioritizes clear layer boundari
 
 ## Related Documents
 
-- `first-layer-research-controller.md`: first layer
-- `second-layer-runtime-supervisor.md`: second layer
-- `third-layer-execution-runtime.md`: third layer
+- [`first-layer-research-controller.md`](first-layer-research-controller.md): first layer
+- [`second-layer-runtime-supervisor.md`](second-layer-runtime-supervisor.md): second layer
+- [`third-layer-execution-runtime.md`](third-layer-execution-runtime.md): third layer
+- [`lightscientist-architecture.svg`](lightscientist-architecture.svg): architecture diagram
