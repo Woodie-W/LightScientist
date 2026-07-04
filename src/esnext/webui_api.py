@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .webui_data import (
+    artifact_phases,
     build_overview,
     build_pipeline,
     build_workers,
@@ -17,6 +19,7 @@ from .webui_data import (
     process_excerpt,
     read_events,
     read_state,
+    resolve_workspace_path,
     safe_read_workspace_file,
     stage_runs,
     workspace_root,
@@ -64,7 +67,7 @@ class LightScientistWebUIHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/workers":
             return self._send_json({"workers": build_workers(read_events(self.workspace, limit=300))})
         if parsed.path == "/api/artifacts":
-            return self._send_json({"artifacts": list_artifacts(self.workspace)})
+            return self._send_json({"artifacts": list_artifacts(self.workspace), "phases": artifact_phases(self.workspace)})
         if parsed.path == "/api/runs":
             return self._send_json({"stage_runs": stage_runs(self.workspace)})
         if parsed.path == "/api/knowledge":
@@ -81,12 +84,30 @@ class LightScientistWebUIHandler(SimpleHTTPRequestHandler):
             if not path:
                 raise ValueError("missing path")
             return self._send_json(safe_read_workspace_file(self.workspace, path))
+        if parsed.path == "/api/file/raw":
+            path = query.get("path", [""])[0]
+            if not path:
+                raise ValueError("missing path")
+            return self._send_file(path)
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def _send_json(self, payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_file(self, relative_path: str) -> None:
+        path = resolve_workspace_path(self.workspace, relative_path)
+        if not path.exists() or not path.is_file():
+            raise FileNotFoundError(relative_path)
+        body = path.read_bytes()
+        mime, _ = mimetypes.guess_type(path.name)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime or "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

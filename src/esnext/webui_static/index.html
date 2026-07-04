@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LightScientist WebUI</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=artifacts3" />
   </head>
   <body>
     <div id="app">
@@ -16,6 +16,7 @@
         <nav class="tabs">
           <button data-tab="overview" class="tab is-active">Overview</button>
           <button data-tab="pipeline" class="tab">Pipeline</button>
+          <button data-tab="artifacts" class="tab">Artifacts</button>
           <button data-tab="knowledge" class="tab">Knowledge</button>
           <button data-tab="logs" class="tab">Logs</button>
         </nav>
@@ -25,6 +26,7 @@
       <main class="shell">
         <section id="tab-overview" class="tab-panel"></section>
         <section id="tab-pipeline" class="tab-panel is-hidden"></section>
+        <section id="tab-artifacts" class="tab-panel is-hidden"></section>
         <section id="tab-knowledge" class="tab-panel is-hidden"></section>
         <section id="tab-logs" class="tab-panel is-hidden"></section>
       </main>
@@ -35,9 +37,9 @@
         <strong id="preview-title">File Preview</strong>
         <button id="preview-close" class="ghost-button">Close</button>
       </div>
-      <pre id="preview-body" class="preview-body"></pre>
+      <div id="preview-body" class="preview-body"></div>
     </dialog>
 
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=artifacts3"></script>
   </body>
 </html>

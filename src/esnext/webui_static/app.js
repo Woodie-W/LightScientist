@@ -1,7 +1,10 @@
 const state = {
   activeTab: "overview",
+  artifactPhase: "idea",
+  artifactFilters: { subgroup: "all", ext: "all" },
   overview: null,
   pipeline: null,
+  artifacts: null,
   knowledge: null,
   events: [],
   filters: { layer: "all", type: "all" },
@@ -49,14 +52,16 @@ function statusChip(status, extra = "") {
 
 async function refresh() {
   try {
-    const [overview, pipeline, knowledge, events] = await Promise.all([
+    const [overview, pipeline, artifacts, knowledge, events] = await Promise.all([
       api("/api/overview"),
       api("/api/pipeline"),
+      api("/api/artifacts"),
       api("/api/knowledge"),
       api("/api/events?limit=240"),
     ]);
     state.overview = overview;
     state.pipeline = pipeline;
+    state.artifacts = artifacts;
     state.knowledge = knowledge;
     state.events = events.events || [];
     render();
@@ -251,6 +256,91 @@ function renderKnowledge() {
   `;
 }
 
+function renderArtifacts() {
+  const data = state.artifacts;
+  if (!data) return;
+  const phaseMap = new Map((data.phases || []).map((phase) => [phase.key, phase]));
+  const phases = [
+    phaseMap.get("idea") || { key: "idea", title: "Idea", count: 0, updated_at: 0, items: [] },
+    phaseMap.get("experiment") || { key: "experiment", title: "Experiment", count: 0, updated_at: 0, items: [] },
+    phaseMap.get("paper") || { key: "paper", title: "Paper", count: 0, updated_at: 0, items: [] },
+  ];
+  if (!phases.some((phase) => phase.key === state.artifactPhase)) state.artifactPhase = "idea";
+  const active = phases.find((phase) => phase.key === state.artifactPhase);
+  const allItems = active?.items || [];
+  const subgroups = [...new Set(allItems.map((item) => item.subgroup).filter(Boolean))].sort();
+  const exts = [...new Set(allItems.map((item) => item.ext).filter(Boolean))].sort();
+  const items = allItems.filter((item) => {
+    const subgroupOk = state.artifactFilters.subgroup === "all" || item.subgroup === state.artifactFilters.subgroup;
+    const extOk = state.artifactFilters.ext === "all" || item.ext === state.artifactFilters.ext;
+    return subgroupOk && extOk;
+  });
+  $("#tab-artifacts").innerHTML = `
+    <div class="stack">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Artifacts</div>
+          <div class="card-kicker">Stage Outputs</div>
+        </div>
+        <div class="phase-switch phase-switch-inline">
+          ${phases.map((phase) => `
+            <button class="phase-button ${phase.key === state.artifactPhase ? "is-active" : ""}" data-phase="${phase.key}">
+              <span>${escapeHtml(phase.title)}</span>
+              <span class="phase-meta">${phase.count}</span>
+            </button>
+          `).join("")}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">${escapeHtml(active?.title || "Artifacts")}</div>
+            <div class="card-kicker">${items.length} visible / ${allItems.length} total</div>
+          </div>
+          <div class="muted mono">${fmtTime(active?.updated_at || 0)}</div>
+        </div>
+        <div class="artifact-filter-block">
+          <div class="metric-label">Subtask</div>
+          <div class="phase-switch phase-switch-inline">
+            ${["all", ...subgroups].map((subgroup) => `
+              <button class="filter-button ${state.artifactFilters.subgroup === subgroup ? "is-active" : ""}" data-filter-kind="subgroup" data-filter-value="${escapeHtml(subgroup)}">
+                ${escapeHtml(subgroup)}
+              </button>
+            `).join("")}
+          </div>
+        </div>
+        <div class="artifact-filter-block">
+          <div class="metric-label">Type</div>
+          <div class="phase-switch phase-switch-inline">
+            ${["all", ...exts].map((ext) => `
+              <button class="filter-button ${state.artifactFilters.ext === ext ? "is-active" : ""}" data-filter-kind="ext" data-filter-value="${escapeHtml(ext)}">
+                ${escapeHtml(ext)}
+              </button>
+            `).join("")}
+          </div>
+        </div>
+        <div class="artifact-list">
+          ${items.map(renderArtifactRow).join("") || `<div class="muted">No artifacts in this filter.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
+  $$(".phase-button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.artifactPhase = btn.dataset.phase;
+      state.artifactFilters = { subgroup: "all", ext: "all" };
+      renderArtifacts();
+    });
+  });
+  $$(".filter-button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.artifactFilters[btn.dataset.filterKind] = btn.dataset.filterValue;
+      renderArtifacts();
+    });
+  });
+  wirePreviewButtons();
+}
+
 function renderLogs() {
   const events = state.events.filter((item) => {
     const layerOk = state.filters.layer === "all" || item.layer === state.filters.layer;
@@ -316,15 +406,14 @@ function renderWorkerRow(worker) {
 }
 
 function renderArtifactRow(item) {
-  const previewable = /\.(md|txt|json|jsonl|tex|py|log)$/i.test(item.path || "");
   return `
     <div class="artifact-row">
       <div class="artifact-head">
         <div>
           <div class="artifact-name mono">${escapeHtml(item.path)}</div>
-          <div class="artifact-meta">${escapeHtml(item.kind)} · ${fmtBytes(item.size)}</div>
+          <div class="artifact-meta">${escapeHtml(item.subgroup || "root")} · ${escapeHtml(item.ext || "(none)")} · ${fmtBytes(item.size)}</div>
         </div>
-        ${previewable ? `<button class="preview-button" data-path="${escapeHtml(item.path)}">Preview</button>` : ""}
+        ${item.previewable ? `<button class="preview-button" data-path="${escapeHtml(item.path)}" data-preview-kind="${escapeHtml(item.preview_kind)}">Preview</button>` : ""}
       </div>
     </div>
   `;
@@ -334,9 +423,16 @@ function wirePreviewButtons() {
   $$(".preview-button").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const path = btn.dataset.path;
-      const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
-      $("#preview-title").textContent = data.path;
-      $("#preview-body").textContent = data.content;
+      const kind = btn.dataset.previewKind || "text";
+      $("#preview-title").textContent = path;
+      if (kind === "image") {
+        $("#preview-body").innerHTML = `<img class="preview-image" src="/api/file/raw?path=${encodeURIComponent(path)}" alt="${escapeHtml(path)}" />`;
+      } else if (kind === "pdf") {
+        $("#preview-body").innerHTML = `<iframe class="preview-frame" src="/api/file/raw?path=${encodeURIComponent(path)}"></iframe>`;
+      } else {
+        const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
+        $("#preview-body").innerHTML = `<pre class="preview-text">${escapeHtml(data.content)}</pre>`;
+      }
       $("#preview-dialog").showModal();
     });
   });
@@ -346,6 +442,7 @@ function render() {
   renderHeader();
   renderOverview();
   renderPipeline();
+  renderArtifacts();
   renderKnowledge();
   renderLogs();
 }

@@ -19,6 +19,15 @@ def events_path(root: Path) -> Path:
     return root / ".lightscientist" / "events.jsonl"
 
 
+def resolve_workspace_path(root: Path, relative_path: str) -> Path:
+    path = (root / relative_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("path outside workspace") from exc
+    return path
+
+
 def _read_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
     if not path.exists():
         return dict(default or {})
@@ -92,6 +101,74 @@ def list_artifacts(root: Path, limit: int = 24) -> list[dict[str, Any]]:
             )
     items.sort(key=lambda item: float(item["updated_at"]), reverse=True)
     return items[:limit]
+
+
+def artifact_phases(root: Path) -> list[dict[str, Any]]:
+    groups = [
+        ("idea", "Idea", ["phase1-idea"]),
+        ("experiment", "Experiment", ["phase2-experiment", "research.md", "research.jsonl", "research-dashboard.md", "research.ideas.md"]),
+        ("paper", "Paper", ["phase3-paper"]),
+    ]
+    phases: list[dict[str, Any]] = []
+    for key, title, paths in groups:
+        items: list[dict[str, Any]] = []
+        for rel in paths:
+            path = root / rel
+            if not path.exists():
+                continue
+            if path.is_file():
+                items.append(_artifact_item(root, path, key))
+                continue
+            for child in sorted(path.rglob("*")):
+                if child.is_file():
+                    items.append(_artifact_item(root, child, key))
+        items.sort(key=lambda item: item["path"])
+        phases.append(
+            {
+                "key": key,
+                "title": title,
+                "count": len(items),
+                "updated_at": max((float(item["updated_at"]) for item in items), default=0.0),
+                "items": items,
+            }
+        )
+    return phases
+
+
+def _artifact_item(root: Path, path: Path, phase: str) -> dict[str, Any]:
+    rel = str(path.relative_to(root))
+    ext = path.suffix.lower() or "(none)"
+    preview_kind = _preview_kind(path)
+    return {
+        "path": rel,
+        "size": path.stat().st_size,
+        "updated_at": path.stat().st_mtime,
+        "kind": phase,
+        "subgroup": _artifact_subgroup(rel, phase),
+        "ext": ext,
+        "preview_kind": preview_kind,
+        "previewable": preview_kind != "none",
+    }
+
+
+def _artifact_subgroup(relative_path: str, phase: str) -> str:
+    parts = Path(relative_path).parts
+    if phase == "experiment" and parts and parts[0] != "phase2-experiment":
+        return "state"
+    if len(parts) >= 3:
+        return parts[1]
+    return "root"
+
+
+def _preview_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".md", ".txt", ".json", ".jsonl", ".tex", ".py", ".log", ".csv", ".yaml", ".yml"}:
+        return "text"
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}:
+        return "image"
+    if suffix == ".pdf":
+        return "pdf"
+    return "none"
 
 
 def build_pipeline(state: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -208,11 +285,7 @@ def process_excerpt(root: Path, limit: int = 4000) -> str:
 
 
 def safe_read_workspace_file(root: Path, relative_path: str, limit: int = 120_000) -> dict[str, Any]:
-    path = (root / relative_path).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("path outside workspace") from exc
+    path = resolve_workspace_path(root, relative_path)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(relative_path)
     return {

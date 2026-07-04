@@ -13,5 +13,6 @@ dist/
 build/
 *.egg-info/
 
-examples/TabPFN/
+examples/
 *:Zone.Identifier
+题目要求.pdf
