@@ -5,13 +5,14 @@ description: Automated review and improvement loop for the paper. Simulates revi
 
 # Paper Review
 
-Simulate conference-quality peer review and iteratively improve the paper.
+Simulate rigorous review for a reproduction-and-optimization manuscript and iteratively improve it.
 
 ## Inputs
 
 - `phase3-paper/paper/main.pdf` — compiled paper
 - `phase3-paper/paper/sections/*.tex` — LaTeX source files
 - `phase3-paper/PAPER_PLAN.md` — original plan for reference
+- `phase2-experiment/REPRODUCE_COMPLETE.md` — reproduction baseline reference
 
 ## Prerequisites
 
@@ -25,13 +26,14 @@ Read the entire paper (all `.tex` files) and evaluate against these criteria:
 
 **Technical Soundness** (1-5):
 - Are claims supported by evidence?
+- Is the reproduced baseline stated clearly and compared correctly?
 - Is the statistical methodology correct?
 - Are there logical gaps in the argument?
 - Are threats to validity adequately discussed?
 
 **Novelty** (1-5):
-- Is the contribution clearly differentiated from prior work?
-- Is the related work section thorough and fair?
+- Is the optimization contribution clearly separated from the original paper's contribution?
+- Does the manuscript avoid pretending this is a broader novelty claim than was actually tested?
 
 **Presentation** (1-5):
 - Is the paper well-organized and easy to follow?
@@ -43,6 +45,7 @@ Read the entire paper (all `.tex` files) and evaluate against these criteria:
 - Are the benchmarks appropriate and sufficient?
 - Is the experimental methodology sound (enough trials, proper baselines)?
 - Are the results reproducible from the description?
+- Are failure cases and scope limits stated honestly?
 
 ### 2. Simulate Reviewer Feedback
 
@@ -101,6 +104,7 @@ For each critical and major issue, make the corresponding fix:
 
 - **Missing evidence**: add data from `EXPERIMENT_RESULTS.md` or note that additional experiments are needed
 - **Overclaimed results**: tone down language, add caveats
+- **Reproduction mismatch**: explain the gap against the reference paper instead of hiding it
 - **Presentation issues**: rewrite sections, improve figure clarity
 - **Missing related work**: add references from `LITERATURE_SURVEY.md`
 - **Statistical concerns**: verify numbers, add confidence intervals
@@ -130,6 +134,7 @@ Before declaring the paper ready:
 - [ ] Title is specific and informative
 - [ ] Abstract is self-contained (250 words max)
 - [ ] All contributions listed in intro are supported in evaluation
+- [ ] Reproduced baseline and optimized result are both explicitly reported
 - [ ] All tables and figures are referenced in text
 - [ ] References are complete and correctly formatted
 - [ ] Page count is within venue limits

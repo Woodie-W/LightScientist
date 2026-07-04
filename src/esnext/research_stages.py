@@ -31,7 +31,8 @@ STAGES: dict[str, StageSpec] = {
     "idea.probe_batch": StageSpec("idea.probe_batch", "idea", _skill("idea-probe"), "phase1-idea/probes", "idea.probe_collect", ("idea.generate", "idea.evaluate", "idea.probe_collect")),
     "idea.probe_collect": StageSpec("idea.probe_collect", "idea", _skill("idea-probe-collect"), "phase1-idea/PROBE_SUMMARY.md", "idea.gate", ("idea.generate", "idea.evaluate", "idea.gate")),
     "idea.gate": StageSpec("idea.gate", "idea", "", "phase1-idea/IDEA_REPORT.md", "experiment.setup", ("experiment.setup", "idea.generate", "idea.probe_batch"), True),
-    "experiment.setup": StageSpec("experiment.setup", "experiment", _skill("experiment-setup"), "phase2-experiment/SETUP_COMPLETE.md", "experiment.loop", ("experiment.loop",)),
+    "experiment.setup": StageSpec("experiment.setup", "experiment", _skill("experiment-setup"), "phase2-experiment/SETUP_COMPLETE.md", "experiment.reproduce", ("experiment.reproduce",)),
+    "experiment.reproduce": StageSpec("experiment.reproduce", "experiment", _skill("experiment-reproduce"), "phase2-experiment/REPRODUCE_COMPLETE.md", "experiment.loop", ("experiment.loop", "experiment.analyze")),
     "experiment.loop": StageSpec("experiment.loop", "experiment", _skill("experiment-loop"), "research.jsonl", "experiment.analyze", ("experiment.setup", "experiment.loop", "experiment.analyze", "experiment.gate")),
     "experiment.analyze": StageSpec("experiment.analyze", "experiment", _skill("experiment-analyze"), "phase2-experiment/EXPERIMENT_RESULTS.md", "experiment.gate", ("experiment.loop", "experiment.gate")),
     "experiment.gate": StageSpec("experiment.gate", "experiment", _skill("experiment-analyze"), "phase2-experiment/EXPERIMENT_RESULTS.md", "paper.plan", ("paper.plan", "experiment.loop", "experiment.analyze"), True),
@@ -52,6 +53,7 @@ PHASE_DESCRIPTIONS = {
     ),
     "experiment": (
         "experiment.setup: prepare code, data, run commands, and smoke test",
+        "experiment.reproduce: reproduce the fixed baseline experiment first",
         "experiment.loop: run the autonomous experiment loop",
         "experiment.analyze: analyze results and write experiment report",
         "experiment.gate: decide whether to enter paper writing",

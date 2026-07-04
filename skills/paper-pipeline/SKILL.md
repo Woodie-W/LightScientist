@@ -15,16 +15,18 @@ controller owns stage transitions. Use `paper-plan`, `paper-figure`,
 
 From prior artifacts or the first-layer controller:
 
-- **Venue**: target venue (default: usenix-security)
+- **Venue**: target venue or paper style
 - `phase2-experiment/EXPERIMENT_RESULTS.md` — experiment results (required)
-- `phase1-idea/IDEA_REPORT.md` — research idea (required)
-- `phase1-idea/LITERATURE_SURVEY.md` — related work (required)
+- `phase2-experiment/REPRODUCE_COMPLETE.md` — baseline reproduction handoff (required)
+- `phase1-idea/IDEA_REPORT.md` — optional idea context
+- `phase1-idea/LITERATURE_SURVEY.md` — optional related work context
 
 ## Prerequisites
 
-Phase 2 must be complete with statistically significant results. Check:
+Phase 2 must be complete enough to support a trustworthy paper. Check:
 1. `phase2-experiment/EXPERIMENT_RESULTS.md` exists
-2. At least one "keep" result in `research.jsonl` (if it exists)
+2. `phase2-experiment/REPRODUCE_COMPLETE.md` exists
+3. At least one baseline reproduction result is documented
 
 If prerequisites are not met, warn the user and suggest completing Phase 2 first.
 
@@ -35,7 +37,7 @@ If prerequisites are not met, warn the user and suggest completing Phase 2 first
 Invoke the `paper-plan` skill.
 
 **Gate**: Verify `phase3-paper/PAPER_PLAN.md` exists with:
-- Clear title and abstract draft
+- Clear task framing around one fixed reproduced experiment
 - Claim-evidence mapping
 - Section outline with page budget
 - Figure and table plan
@@ -45,7 +47,7 @@ Invoke the `paper-plan` skill.
 Invoke the `paper-figure` skill.
 
 **Gate**: Verify `phase3-paper/figures/` contains:
-- At least 2 PDF figures (coverage plot + comparison)
+- At least 2 figures or tables that directly support the reproduced task
 - At least 1 LaTeX table file
 
 ### Stage 3: Paper Writing
@@ -56,7 +58,7 @@ Invoke the `paper-write` skill.
 - `phase3-paper/paper/main.tex` exists
 - All section files in `phase3-paper/paper/sections/` are non-empty
 - `phase3-paper/paper/references.bib` has entries
-- `phase3-paper/paper/main.pdf` compiles successfully
+- `phase3-paper/paper/main.pdf` compiles successfully when LaTeX is available
 
 ### Stage 4: Review and Improvement
 
@@ -65,7 +67,7 @@ Invoke the `paper-review` skill.
 Run up to 3 review rounds. **Gate** for completion:
 - All critical issues from the latest review are resolved
 - Overall score ≥ 3.5/5
-- Paper compiles cleanly with no warnings
+- The manuscript does not overclaim beyond the reproduced task
 
 ### Stage 5: Final Summary
 

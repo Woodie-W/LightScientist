@@ -5,18 +5,22 @@ description: Create a structured paper outline with claim-evidence alignment. Ma
 
 # Paper Plan
 
-Create a detailed paper outline that maps experimental evidence to claims.
+Create a detailed outline for a reproduction-and-optimization manuscript that maps experimental evidence to claims.
 
 ## Inputs
 
 - `phase2-experiment/EXPERIMENT_RESULTS.md`
-- `phase1-idea/IDEA_REPORT.md`
-- `phase1-idea/LITERATURE_SURVEY.md`
-- **Venue**: target venue
+- `phase2-experiment/REPRODUCE_COMPLETE.md`
+- `phase1-idea/IDEA_REPORT.md` (optional)
+- `phase1-idea/LITERATURE_SURVEY.md` (optional)
+- **Venue**: target venue or report style
 
 ## Prerequisites
 
 `phase2-experiment/EXPERIMENT_RESULTS.md` must exist with meaningful results or a clearly framed negative result.
+
+`phase2-experiment/REPRODUCE_COMPLETE.md` must exist so the plan is anchored to
+one fixed reproduced experiment.
 
 ## Procedure
 
@@ -24,22 +28,22 @@ Create a detailed paper outline that maps experimental evidence to claims.
 
 Identify:
 
-- primary claim
-- secondary claims
+- primary claim about the reproduced task
+- secondary claims about the tested optimization
 - negative results
 
 For each claim, identify supporting evidence and candidate figures/tables.
 
 ### 2. Design Paper Structure
 
-Use a standard research paper structure:
+Use a report/manuscript structure that stays tied to the fixed reproduced task:
 
 1. Introduction
-2. Background & Motivation
-3. Approach / Design
-4. Implementation
-5. Evaluation
-6. Related Work
+2. Task and Reproduction Target
+3. Reproduction Setup
+4. Optimization Method
+5. Results and Analysis
+6. Limitations and Failure Cases
 7. Conclusion
 
 ### 3. Plan Figures and Tables
@@ -50,10 +54,10 @@ Map each claim to visual evidence.
 
 Formulate 3-4 research questions:
 
-- main metric improvement
-- component contribution
-- practicality or overhead
-- optional generalization
+- whether the baseline reproduction matches the reference paper
+- whether the optimization improves the reproduced baseline
+- what trade-offs, overheads, or failures appear
+- what conclusions are valid only inside the tested scope
 
 ### 5. Write Plan Document
 
@@ -63,6 +67,7 @@ Create `phase3-paper/PAPER_PLAN.md` with:
 - title
 - abstract draft
 - claims and evidence
+- explicit baseline vs optimized comparison plan
 - section outline
 - figures and tables plan
 - key references

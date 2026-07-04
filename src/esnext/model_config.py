@@ -29,6 +29,13 @@ API_KEY = os.getenv("LIGHTSCIENTIST_API_KEY") or os.getenv("DEEPSEEK_API_KEY", "
 DEEPSEEK_THINKING = os.getenv("LIGHTSCIENTIST_THINKING") or os.getenv("DEEPSEEK_THINKING", "enabled")
 DEEPSEEK_REASONING_EFFORT = os.getenv("LIGHTSCIENTIST_REASONING_EFFORT") or os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
 
+# 是否让 httpx 信任系统代理环境变量 (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY)。
+# 默认 True：在有 TUN/fake-ip 的环境（如本机 WSL2 mirrored + Windows Clash）下必须走代理，
+#   否则 api.deepseek.com 会被解析成 198.18.x.x fake-ip 而 TLS 握手卡死。
+# 设为 0/false/none 时强制直连，适用于纯净网络或 LM Studio 本地端点。
+_trust_env_raw = os.getenv("LIGHTSCIENTIST_TRUST_ENV", "1").strip().lower()
+TRUST_ENV = _trust_env_raw not in ("0", "false", "no", "none", "off")
+
 
 class ProviderMessageAdapter:
     def patch_request_messages(
@@ -204,7 +211,7 @@ def build_chat_model(
         api_key=API_KEY,
         temperature=0.2,
         use_responses_api=False,
-        http_client=httpx.Client(trust_env=False),
+        http_client=httpx.Client(trust_env=TRUST_ENV),
         **chat_provider_options(),
         trace=trace,
         status_cb=status_cb,

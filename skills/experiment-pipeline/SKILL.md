@@ -5,11 +5,11 @@ description: Reference document for the full Phase 2 flow. In LightScientist, fi
 
 # Experiment Pipeline
 
-Reference flow for Phase 2: set up the experiment environment, then enter the autonomous experiment loop.
+Reference flow for Phase 2: set up the experiment environment, reproduce the fixed baseline experiment, then enter the autonomous optimization loop.
 
 This file is not the active orchestrator in LightScientist. The first-layer
-controller owns stage transitions. Use `experiment-setup`, `experiment-loop`,
-and `experiment-analyze` as the execution skills for real work.
+controller owns stage transitions. Use `experiment-setup`, `experiment-reproduce`,
+`experiment-loop`, and `experiment-analyze` as the execution skills for real work.
 
 ## Inputs
 
@@ -36,12 +36,23 @@ Invoke the `experiment-setup` skill:
 
 **Gate**: proceed only if `phase2-experiment/SETUP_COMPLETE.md` exists and the setup is valid.
 
-### Stage 2: Experiment Loop
+### Stage 2: Reproduction
+
+Invoke the `experiment-reproduce` skill:
+
+1. lock the fixed paper/task/dataset/metric scope
+2. run the baseline reproduction
+3. record the reproduced value and any deviation from the reference paper
+4. create `phase2-experiment/REPRODUCE_COMPLETE.md`
+
+**Gate**: proceed only if `phase2-experiment/REPRODUCE_COMPLETE.md` exists and the baseline reproduction status is explicit.
+
+### Stage 3: Experiment Loop
 
 Invoke the `experiment-loop` skill:
 
 1. Create or resume `research.md`, `research.jsonl`, and `phase2-experiment/worklog.md`
-2. Run or evaluate the baseline
+2. Read the reproduced baseline result first
 3. Enter the autonomous loop: implement or configure -> sanity -> full evaluation -> analyze -> keep or discard -> repeat
 
 The loop runs autonomously until:
@@ -49,7 +60,7 @@ The loop runs autonomously until:
 - The idea space is exhausted
 - Context or resource limits are reached
 
-### Stage 3: Final Analysis
+### Stage 4: Final Analysis
 
 When the loop ends:
 
@@ -61,7 +72,7 @@ When the loop ends:
    - recommended next steps
 3. Generate final plots or tables if they help later writing
 
-### Stage 4: Handoff to Paper Phase
+### Stage 5: Handoff to Paper Phase
 
 If the research pipeline is running end-to-end:
 
@@ -74,12 +85,14 @@ If the research pipeline is running end-to-end:
 If the pipeline is interrupted at any point:
 
 - **During setup**: re-run `experiment-setup` (should be idempotent)
+- **During reproduction**: re-run `experiment-reproduce` and refresh the baseline handoff
 - **During loop**: `experiment-loop` resumes from `research.jsonl`, `research.md`, and `worklog.md`
 - **During analysis**: re-run `experiment-analyze` on existing results
 
 ## Output
 
 - All `experiment-setup` outputs
+- `phase2-experiment/REPRODUCE_COMPLETE.md`
 - All `experiment-loop` outputs (`research.jsonl`, dashboard, worklog)
 - `phase2-experiment/EXPERIMENT_RESULTS.md`
 - `phase2-experiment/plots/`

@@ -228,6 +228,7 @@ def test_copied_skill_dependencies_exist() -> None:
     for rel in (
         "tools/arxiv_search.py",
         "skills/experiment-setup/SKILL.md",
+        "skills/experiment-reproduce/SKILL.md",
         "skills/experiment-loop/SKILL.md",
         "skills/experiment-analyze/SKILL.md",
     ):
@@ -426,6 +427,8 @@ def test_research_controller_reply_yes_transitions_and_runs_next_stage(tmp_path:
         monkeypatch,
         "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
         "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf 'reproduced' > phase2-experiment/REPRODUCE_COMPLETE.md",
+        "answer: Done.",
         "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"score\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"score\":{\"mean\":64}}}\\n' > research.jsonl",
         "answer: Done.",
         "tool: mkdir -p phase2-experiment && printf 'analysis' > phase2-experiment/EXPERIMENT_RESULTS.md",
@@ -511,6 +514,8 @@ def test_cli_research_can_select_start_stage(tmp_path: Path, monkeypatch) -> Non
         monkeypatch,
         "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
         "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf 'reproduced' > phase2-experiment/REPRODUCE_COMPLETE.md",
+        "answer: Done.",
         "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"score\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"score\":{\"mean\":64}}}\\n' > research.jsonl",
         "answer: Done.",
         "tool: mkdir -p phase2-experiment && printf 'analysis' > phase2-experiment/EXPERIMENT_RESULTS.md",
@@ -528,6 +533,8 @@ def test_cli_research_can_reply_to_manual_gate(tmp_path: Path, monkeypatch) -> N
     patch_scripted_model(
         monkeypatch,
         "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
+        "answer: Done.",
+        "tool: mkdir -p phase2-experiment && printf 'reproduced' > phase2-experiment/REPRODUCE_COMPLETE.md",
         "answer: Done.",
         "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"score\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"score\":{\"mean\":64}}}\\n' > research.jsonl",
         "answer: Done.",

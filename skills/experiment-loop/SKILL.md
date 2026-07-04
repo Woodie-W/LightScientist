@@ -5,12 +5,13 @@ description: Core autonomous experiment loop for generic research. Implements id
 
 # Experiment Loop
 
-Autonomous experiment loop: implement ideas, validate with rigor, keep what works, discard what does not, and continue until the current direction is exhausted or paused.
+Autonomous experiment loop: optimize around an already reproduced baseline, validate with rigor, keep what works, discard what does not, and continue until the current direction is exhausted or paused.
 
 ## Prerequisites
 
 - `research.md` exists
 - `phase2-experiment/SETUP_COMPLETE.md` exists
+- `phase2-experiment/REPRODUCE_COMPLETE.md` exists
 - the baseline and evaluation path are understood
 
 ## Setup
@@ -22,7 +23,7 @@ Autonomous experiment loop: implement ideas, validate with rigor, keep what work
 2. Create or switch to a working branch if code edits are part of the task.
 3. Read the core local files deeply before making changes.
 4. Create `research.md`, `phase2-experiment/worklog.md`, and `research.jsonl` if missing.
-5. Initialize state -> run baseline -> log result -> start looping.
+5. Initialize state -> read the reproduced baseline -> start looping.
 
 ### `research.md`
 
@@ -222,6 +223,7 @@ Every few experiments, update the "What's Been Tried" section with accumulated i
 ## Loop Rules
 
 - Keep looping unless the current direction is exhausted or the runtime pauses/cancels it.
+- Treat the reproduced baseline as fixed reference; do not keep redefining baseline mid-loop.
 - Prefer cheap sanity checks before expensive full evaluations.
 - Understand the local system deeply before changing it.
 - Do not thrash on the same failing idea category.
@@ -235,8 +237,9 @@ If `research.md` exists, this is a resume:
 1. Read `research.md`
 2. Read `research.jsonl`
 3. Read `phase2-experiment/worklog.md`
-4. Read recent git history if code changes are involved
-5. Continue from where the loop left off
+4. Read `phase2-experiment/REPRODUCE_COMPLETE.md`
+5. Read recent git history if code changes are involved
+6. Continue from where the loop left off
 
 ## Ideas Backlog
 

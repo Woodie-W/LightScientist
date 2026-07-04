@@ -132,4 +132,4 @@ Initialize `phase2-experiment/worklog.md` if it does not exist.
 - `phase2-experiment/SETUP_COMPLETE.md`
 - any helper runner script placed in `phase2-experiment/`
 
-The experiment is now ready for `experiment-loop`.
+The experiment is now ready for `experiment-reproduce`.

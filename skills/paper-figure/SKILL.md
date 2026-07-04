@@ -1,15 +1,16 @@
 ---
 name: paper-figure
-description: Generate publication-quality figures and tables for the research paper. Describes what kinds of figures a good paper needs and the quality standards they must meet.
+description: Generate publication-quality figures and tables for the reproduction-and-optimization manuscript. Describes what evidence the report must show and the quality standards the visuals must meet.
 ---
 
 # Paper Figure
 
-Generate all figures and tables needed for the paper.
+Generate all figures and tables needed for the manuscript.
 
 ## Inputs
 
 - `phase3-paper/PAPER_PLAN.md`
+- `phase2-experiment/REPRODUCE_COMPLETE.md`
 - `phase2-experiment/results/`
 - `phase2-experiment/EXPERIMENT_RESULTS.md`
 
@@ -17,9 +18,9 @@ Generate all figures and tables needed for the paper.
 
 ### Essential Figures
 
-1. main metric comparison figure
+1. baseline reproduction vs optimized result comparison figure
 2. distribution figure across trials or settings
-3. architecture or workflow overview diagram
+3. workflow or system overview diagram when it actually helps
 
 ### Common Additional Figures
 
@@ -54,7 +55,12 @@ Generate all figures and tables needed for the paper.
 
 ## Approach
 
-Read the paper plan, inspect the data, and create the figures that best tell the paper's story.
+Read the paper plan, inspect the data, and create figures that directly support:
+
+- what was reproduced
+- what was optimized
+- how much changed
+- where the method failed or showed limits when relevant
 
 ## Output
 

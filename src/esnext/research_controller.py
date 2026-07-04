@@ -115,6 +115,7 @@ class ResearchController:
         skill_line = f"Skill to read first: {self._stage_skill_path(spec)}" if spec.skill_path else "No skill file for this gate stage."
         feedback = f"\nLatest user feedback:\n{self.state.user_feedback}\n" if self.state.user_feedback else "\n"
         phase2_state = f"\nPhase 2 state:\n{self._phase2_state_text()}\n" if spec.phase == "experiment" else "\n"
+        paper_constraints = f"\nPaper-phase hard constraints:\n{self._paper_constraints_text()}\n" if spec.phase == "paper" else "\n"
         return f"""You are the second-layer supervisor for one research stage.
 
 Global pipeline:
@@ -124,6 +125,7 @@ Project topic:
 {self.state.topic}
 {feedback}
 {phase2_state}
+{paper_constraints}
 
 Current phase: {spec.phase}
 Current stage: {spec.name}
@@ -137,7 +139,7 @@ Read `PROCESS.md` first when it exists for the high-level project history.
 
 Read standard phase files directly when needed:
 - idea: `phase1-idea/LITERATURE_SURVEY.md`, `phase1-idea/IDEAS_CANDIDATES.md`, `phase1-idea/IDEA_REPORT.md`
-- experiment: `research.md`, `research.jsonl`, `phase2-experiment/worklog.md`, `phase2-experiment/EXPERIMENT_RESULTS.md`
+- experiment: `research.md`, `research.jsonl`, `phase2-experiment/worklog.md`, `phase2-experiment/REPRODUCE_COMPLETE.md`, `phase2-experiment/EXPERIMENT_RESULTS.md`
 - paper: `phase3-paper/PAPER_PLAN.md`, `phase3-paper/figures/`, `phase3-paper/paper/main.pdf`
 
 Required output:
@@ -154,6 +156,8 @@ Rules:
 - Do not edit .lightscientist/project_state.json directly.
 - Write the required output file before reporting completion.
 - When writing workspace artifacts, always use workspace-relative paths such as `{spec.output_path}`. Do not use absolute paths for stage deliverables.
+- In Phase 2, reproduce the fixed baseline experiment before starting optimization work.
+- Do not expand the task to new datasets, new benchmark families, or unrelated claims unless the current stage explicitly requires it.
 - When the stage is completed, failed, or blocked, call finish_stage.
 - Use request_user_decision only for project-level decisions that cannot be answered from files or workers.
 - In auto mode, avoid user interruption; decide from available evidence or finish the stage as failed.
@@ -348,6 +352,7 @@ Rules:
             "research_md": research_md.exists(),
             "research_jsonl": research_jsonl.exists(),
             "worklog": worklog.exists(),
+            "reproduced": (self.workspace_root / "phase2-experiment/REPRODUCE_COMPLETE.md").exists(),
             "results_ready": results.exists(),
             "runs": 0,
             "primary_metric": "",
@@ -390,6 +395,7 @@ Rules:
             f"- research.md: {'present' if state['research_md'] else 'missing'}",
             f"- research.jsonl: {'present' if state['research_jsonl'] else 'missing'}",
             f"- worklog: {'present' if state['worklog'] else 'missing'}",
+            f"- baseline reproduction: {'present' if state['reproduced'] else 'missing'}",
             f"- experiment results: {'present' if state['results_ready'] else 'missing'}",
             f"- runs: {state['runs']}",
         ]
@@ -411,9 +417,19 @@ Rules:
             f"- Summary: {summary or 'No summary provided.'}",
         ]
         if spec.phase == "experiment":
-            lines.append("- Extra files: research.md, research.jsonl, phase2-experiment/worklog.md")
+            lines.append("- Extra files: research.md, research.jsonl, phase2-experiment/worklog.md, phase2-experiment/REPRODUCE_COMPLETE.md")
         with self.process_path.open("a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n\n")
+
+    def _paper_constraints_text(self) -> str:
+        return "\n".join((
+            "- Treat this as a report/manuscript for one fixed paper task, not an open-ended new research paper.",
+            "- Anchor the narrative to one fixed paper, one fixed task, and the reproduced experiment scope available in the workspace.",
+            "- Report baseline reproduction result, optimization result, and their exact comparison whenever numbers are available.",
+            "- If a number, claim, citation, or experiment is missing, say it is missing; do not invent it.",
+            "- Include failed attempts, limitations, and boundary conditions explicitly.",
+            "- Do not claim general superiority beyond the reproduced task and tested configuration.",
+        ))
 
     def _stage_skill_path(self, spec) -> str:
         if not spec.skill_path:

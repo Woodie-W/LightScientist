@@ -1,18 +1,19 @@
 ---
 name: paper-write
-description: Write the paper in LaTeX following the paper plan. Produces a compilable manuscript with proper structure, citations, and formatting for the target venue.
+description: Write the paper/report in LaTeX following the paper plan. Produces a compilable manuscript with proper structure, citations, and formatting for the target venue or report style.
 ---
 
 # Paper Write
 
-Write the full paper in LaTeX based on the paper plan, experiment results, and figures.
+Write the full manuscript in LaTeX based on the paper plan, reproduced baseline, experiment results, and figures.
 
 ## Inputs
 
 - `phase3-paper/PAPER_PLAN.md`
 - `phase2-experiment/EXPERIMENT_RESULTS.md`
-- `phase1-idea/IDEA_REPORT.md`
-- `phase1-idea/LITERATURE_SURVEY.md`
+- `phase2-experiment/REPRODUCE_COMPLETE.md`
+- `phase1-idea/IDEA_REPORT.md` (optional)
+- `phase1-idea/LITERATURE_SURVEY.md` (optional)
 - `phase3-paper/figures/`
 
 ## Prerequisites
@@ -29,17 +30,19 @@ mkdir -p phase3-paper/paper/sections
 ```
 
 Set up from a venue template if one exists; otherwise use a generic format.
+Do not reshape the task into a broad novelty paper if the project is really a
+single-task reproduction-and-optimization report.
 
 ### 2. Write Each Section
 
 Write sections in order:
 
 - `introduction.tex`
-- `background.tex`
-- `design.tex`
-- `implementation.tex`
+- `task_definition.tex`
+- `reproduction_setup.tex`
+- `optimization_method.tex`
 - `evaluation.tex`
-- `related.tex`
+- `limitations.tex`
 - `conclusion.tex`
 
 ### 3. Build References
@@ -51,10 +54,13 @@ Create `phase3-paper/paper/references.bib` with real BibTeX entries.
 Before compiling, verify:
 
 - all claims are supported
+- the reproduced baseline result is stated exactly
+- optimized results are compared directly against that baseline
 - all planned figures and tables are present
 - no unresolved references
 - terminology is consistent
 - all numbers match the experiment data
+- failures and limitations are explicitly documented
 
 ### 5. Compile
 
@@ -68,6 +74,12 @@ If compilation is unavailable, still produce complete source files.
 ### 6. Anti-AI Writing Patterns
 
 Avoid repetitive, generic, obviously machine-written prose patterns.
+
+### 7. Hard Constraints
+
+- Do not invent missing metrics, citations, or experiments.
+- Do not claim general superiority beyond the reproduced task and tested setup.
+- If the optimization failed, write the failure honestly and explain the likely reason.
 
 ## Output
 
