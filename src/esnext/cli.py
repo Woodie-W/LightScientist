@@ -10,6 +10,7 @@ from .manager import StageManager
 from .data_models import ExecutionResult, StageRequest
 from .events import ConsoleEventSink, EventBus, JsonlEventSink
 from .research_controller import ResearchController
+from .webui_api import serve_webui
 
 OK_STATES = {"completed", "waiting", "background"}
 
@@ -42,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     research_parser.add_argument("--stage", default="idea.survey", help="Starting stage for a new project, e.g. idea.survey or experiment.setup.")
     research_parser.add_argument("--reply", help="Reply to a pending manual decision with `y [note]` or `n [note]`.")
     research_parser.add_argument("--watch", action="store_true", help="Print live agent events while the research controller runs.")
+
+    webui_parser = subparsers.add_parser("webui", help="Serve the minimal LightScientist WebUI.")
+    webui_parser.add_argument("--workspace", default=".", help="Workspace root to inspect.")
+    webui_parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
+    webui_parser.add_argument("--port", type=int, default=8765, help="Bind port.")
     return parser
 
 
@@ -110,6 +116,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = controller.reply_user(args.reply) if args.reply else controller.run()
         print_result(result)
         return 0 if result.status in OK_STATES else 1
+    if args.command == "webui":
+        serve_webui(args.workspace, host=args.host, port=args.port)
+        return 0
     if args.command != "run": parser.error(f"Unsupported command: {args.command}")
     event_bus = build_event_bus(args.workspace, args.watch)
     return run_once(StageManager(event_bus=event_bus), args.target, workspace=args.workspace, output=args.output, use_agent=args.agent)

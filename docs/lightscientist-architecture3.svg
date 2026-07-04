@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1510" height="760" viewBox="0 0 1510 760" role="img" aria-labelledby="title desc">
+  <title id="title">LightScientist Architecture</title>
+  <desc id="desc">Three-layer stack; L2 splits into Runtime Controller and Supervisor Agent.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f8fbff"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fbff" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#eef6ff" stop-opacity="1"/>
+    </linearGradient>
+    <marker id="arrowRight" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M 0 1 L 7 4 L 0 7 z" fill="#6aa9d8"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#8fb2d6" flood-opacity="0.18"/>
+    </filter>
+    <style>
+      .title { font: 800 42px Arial, Helvetica, sans-serif; fill: #24486b; }
+      .panelLabel { font: 600 13px Arial, Helvetica, sans-serif; fill: #7c99b8; letter-spacing: 1.5px; }
+      .layerBox { stroke-width: 2; filter: url(#shadow); }
+      .layerNum { font: 800 20px Arial, Helvetica, sans-serif; fill: #fff; }
+      .layerHead { font: 800 24px Arial, Helvetica, sans-serif; fill: #193a5a; }
+      .layerSub { font: 600 16px Arial, Helvetica, sans-serif; fill: #577493; }
+      .layerBody { font: 500 16px Arial, Helvetica, sans-serif; fill: #3b5878; }
+      .sideTitle { font: 700 17px Arial, Helvetica, sans-serif; fill: #193a5a; }
+      .flowDown { font: 600 13px Arial, Helvetica, sans-serif; fill: #5d9fd8; }
+      .flowUp { font: 600 13px Arial, Helvetica, sans-serif; fill: #6aa9d8; }
+      .chip { font: 700 12px Arial, Helvetica, sans-serif; fill: #193a5a; }
+      .chipMuted { font: 600 12px Arial, Helvetica, sans-serif; fill: #6f8dac; }
+      .lineDown { stroke: #6aa9d8; stroke-width: 2.5; fill: none; }
+      .lineUp { stroke: #8ab7de; stroke-width: 2.5; fill: none; }
+      .flowBand { fill: #dcecff; opacity: 0.55; }
+      .subDivider { stroke: #b8d5ef; stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0.8; }
+    </style>
+  </defs>
+
+  <rect width="1510" height="760" fill="url(#bg)"/>
+  <text x="200" y="68" class="title">LightScientist</text>
+
+  <!-- panel -->
+  <rect x="160" y="100" width="1310" height="620" rx="28" fill="url(#panel)" stroke="#c7dbef" stroke-width="1.5"/>
+  <text x="200" y="132" class="panelLabel">RUNTIME STACK</text>
+
+  <!-- L1 -->
+  <rect x="200" y="150" width="1220" height="120" rx="18" fill="#f3f9ff" class="layerBox" stroke="#8db8e4"/>
+  <circle cx="248" cy="210" r="28" fill="#6d9fd3"/>
+  <text x="248" y="217" text-anchor="middle" class="layerNum">L1</text>
+  <text x="295" y="192" class="layerHead">ResearchController</text>
+  <text x="295" y="216" class="layerSub">Stage &amp; gate management</text>
+  <text x="295" y="246" class="layerBody">idea / experiment / paper / done</text>
+
+  <rect x="610" y="161" width="148" height="44" rx="14" fill="#f8fbff" stroke="#c7dbef" stroke-width="1.5"/>
+  <text x="684" y="189" text-anchor="middle" class="sideTitle">User / CLI</text>
+
+  <rect x="610" y="215" width="148" height="44" rx="14" fill="#f2f8ff" stroke="#c7dbef" stroke-width="1.5"/>
+  <text x="684" y="243" text-anchor="middle" class="sideTitle">State skills</text>
+
+  <rect x="1342" y="172" width="58" height="24" rx="12" fill="#e4f0fb" stroke="#8db8e4" stroke-width="1.5"/>
+  <text x="1371" y="189" text-anchor="middle" class="chip">Logic</text>
+
+  <!-- flow L1-L2 -->
+  <rect x="200" y="278" width="1220" height="42" rx="10" class="flowBand"/>
+  <line x1="1290" y1="284" x2="1290" y2="306" class="lineDown"/>
+  <polygon points="1290,314 1284,304 1296,304" fill="#6aa9d8"/>
+  <text x="1305" y="302" class="flowDown">dispatch stage</text>
+  <line x1="220" y1="306" x2="220" y2="284" class="lineUp"/>
+  <polygon points="220,274 214,284 226,284" fill="#8ab7de"/>
+  <text x="235" y="302" class="flowUp">delivery / gate</text>
+
+  <!-- L2 -->
+  <rect x="200" y="328" width="1220" height="200" rx="18" fill="#eef6ff" class="layerBox" stroke="#73a9dd"/>
+  <circle cx="248" cy="428" r="28" fill="#4f8fca"/>
+  <text x="248" y="435" text-anchor="middle" class="layerNum">L2</text>
+  <text x="295" y="356" class="layerHead">RuntimeSupervisor</text>
+
+  <rect x="295" y="372" width="538" height="140" rx="14" fill="#f3f9ff" stroke="#8db8e4" stroke-width="1.5"/>
+  <text x="315" y="400" class="layerHead">Runtime Controller</text>
+  <text x="315" y="424" class="layerSub">Runtime workbench</text>
+  <text x="315" y="448" class="layerBody">task queues, stall, schedule resume, worker records, data</text>
+  <rect x="755" y="394" width="58" height="24" rx="12" fill="#e4f0fb" stroke="#8db8e4" stroke-width="1.5"/>
+  <text x="784" y="411" text-anchor="middle" class="chip">Logic</text>
+
+  <line x1="841" y1="372" x2="841" y2="512" class="subDivider"/>
+
+  <rect x="853" y="372" width="538" height="140" rx="14" fill="#deedfb" stroke="#73a9dd" stroke-width="1.5"/>
+  <text x="873" y="400" class="layerHead">Supervisor Agent</text>
+  <text x="873" y="424" class="layerSub">Stage gates, worker control</text>
+  <text x="873" y="448" class="layerBody">dispatch workers, worker state control, research stage transition</text>
+  <rect x="1283" y="394" width="88" height="24" rx="12" fill="#deedfb" stroke="#73a9dd" stroke-width="1.5"/>
+  <text x="1327" y="411" text-anchor="middle" class="chip">DeepAgent</text>
+
+  <path d="M 833 442 L 853 442" stroke="#6aa9d8" stroke-width="2" fill="none" marker-end="url(#arrowRight)"/>
+  <text x="798" y="438" class="layerBody" fill="#5d9fd8">events</text>
+
+  <!-- flow L2-L3 -->
+  <rect x="200" y="536" width="1220" height="42" rx="10" class="flowBand"/>
+  <line x1="1290" y1="542" x2="1290" y2="564" class="lineDown"/>
+  <polygon points="1290,572 1284,562 1296,562" fill="#6aa9d8"/>
+  <text x="1305" y="560" class="flowDown">start / resume</text>
+  <line x1="220" y1="564" x2="220" y2="542" class="lineUp"/>
+  <polygon points="220,532 214,542 226,542" fill="#8ab7de"/>
+  <text x="235" y="560" class="flowUp">status / events</text>
+
+  <!-- L3 -->
+  <rect x="200" y="586" width="1220" height="120" rx="18" fill="#f5fbff" class="layerBox" stroke="#98c1e8"/>
+  <circle cx="248" cy="646" r="28" fill="#5f9fd8"/>
+  <text x="248" y="653" text-anchor="middle" class="layerNum">L3</text>
+  <text x="295" y="622" class="layerHead">ExecutionRuntime</text>
+  <text x="295" y="646" class="layerSub">Pluggable execution backends</text>
+  <text x="295" y="670" class="layerBody">concrete tasks, worker tools, subtask skills, scheduled wake</text>
+  <rect x="1328" y="608" width="72" height="24" rx="12" fill="#f8fbff" stroke="#aac4df" stroke-dasharray="4 3"/>
+  <text x="1364" y="625" text-anchor="middle" class="chipMuted">Codex</text>
+  <rect x="1210" y="608" width="108" height="24" rx="12" fill="#f8fbff" stroke="#aac4df" stroke-dasharray="4 3"/>
+  <text x="1264" y="625" text-anchor="middle" class="chipMuted">Claude Code</text>
+  <rect x="1092" y="608" width="108" height="24" rx="12" fill="#e6f1fc" stroke="#98c1e8" stroke-width="1.5"/>
+  <text x="1146" y="625" text-anchor="middle" class="chip">DeepAgent</text>
+
+</svg>

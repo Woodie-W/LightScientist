@@ -350,15 +350,13 @@ Rules:
             "worklog": worklog.exists(),
             "results_ready": results.exists(),
             "runs": 0,
-            "keep": 0,
-            "discard": 0,
-            "crash": 0,
-            "sanity_fail": 0,
-            "best_keep": "",
+            "primary_metric": "",
+            "status_counts": {},
+            "best_result": "",
         }
         if not research_jsonl.exists():
             return state
-        primary = "branch_cov"
+        primary = "primary_metric"
         best_value: float | None = None
         best_note = ""
         for line in research_jsonl.read_text(encoding="utf-8").splitlines():
@@ -374,26 +372,33 @@ Rules:
                 continue
             state["runs"] = int(state["runs"]) + 1
             status = str(item.get("status", ""))
-            if status in {"keep", "discard", "crash", "sanity_fail"}:
-                state[status] = int(state[status]) + 1
+            if status:
+                counts = state["status_counts"]
+                counts[status] = int(counts.get(status, 0)) + 1
             value = item.get("results", {}).get(primary, {}).get("mean")
             if status == "keep" and isinstance(value, (int, float)) and (best_value is None or float(value) > best_value):
                 best_value = float(value)
                 best_note = f"run {item.get('run', '?')}: {primary}={value} ({item.get('description', '')})".strip()
-        state["best_keep"] = best_note
+        state["primary_metric"] = primary
+        state["best_result"] = best_note
         return state
 
     def _phase2_state_text(self) -> str:
         state = self._phase2_state()
+        counts = state["status_counts"]
         lines = [
             f"- research.md: {'present' if state['research_md'] else 'missing'}",
             f"- research.jsonl: {'present' if state['research_jsonl'] else 'missing'}",
             f"- worklog: {'present' if state['worklog'] else 'missing'}",
             f"- experiment results: {'present' if state['results_ready'] else 'missing'}",
-            f"- runs: {state['runs']} | keep: {state['keep']} | discard: {state['discard']} | crash: {state['crash']} | sanity_fail: {state['sanity_fail']}",
+            f"- runs: {state['runs']}",
         ]
-        if state["best_keep"]:
-            lines.append(f"- best keep: {state['best_keep']}")
+        if counts:
+            lines.append("- statuses: " + " | ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
+        if state["primary_metric"]:
+            lines.append(f"- primary metric: {state['primary_metric']}")
+        if state["best_result"]:
+            lines.append(f"- best keep: {state['best_result']}")
         return "\n".join(lines)
 
     def _append_process(self, spec, output_path: Path, summary: str) -> None:

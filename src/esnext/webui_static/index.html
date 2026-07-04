@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LightScientist WebUI</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">LightScientist</div>
+          <div class="brand-sub">Research Operations Console</div>
+        </div>
+        <nav class="tabs">
+          <button data-tab="overview" class="tab is-active">Overview</button>
+          <button data-tab="pipeline" class="tab">Pipeline</button>
+          <button data-tab="knowledge" class="tab">Knowledge</button>
+          <button data-tab="logs" class="tab">Logs</button>
+        </nav>
+        <div id="header-status" class="header-status">loading...</div>
+      </header>
+
+      <main class="shell">
+        <section id="tab-overview" class="tab-panel"></section>
+        <section id="tab-pipeline" class="tab-panel is-hidden"></section>
+        <section id="tab-knowledge" class="tab-panel is-hidden"></section>
+        <section id="tab-logs" class="tab-panel is-hidden"></section>
+      </main>
+    </div>
+
+    <dialog id="preview-dialog" class="preview-dialog">
+      <div class="preview-head">
+        <strong id="preview-title">File Preview</strong>
+        <button id="preview-close" class="ghost-button">Close</button>
+      </div>
+      <pre id="preview-body" class="preview-body"></pre>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

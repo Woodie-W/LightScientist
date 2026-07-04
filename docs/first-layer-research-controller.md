@@ -149,9 +149,8 @@ For experiment stages, the first layer also injects a compact Phase 2 status sum
 The first layer reads `research.jsonl` and related files to summarize:
 
 - run count
-- kept vs discarded runs
-- crash count
-- sanity failures
+- status counts
+- primary metric
 - best metric summary
 - whether `research.md`, `worklog.md`, and results files exist
 

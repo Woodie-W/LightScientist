@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Search arXiv and DBLP for fuzzing research papers, with PDF download support.
+"""Search arXiv and DBLP for research papers, with PDF download support.
 
 Usage:
-    python tools/arxiv_search.py --query "coverage-guided fuzzing" --max-results 20
-    python tools/arxiv_search.py --query "seed scheduling greybox" --source dblp --max-results 10
+    python tools/arxiv_search.py --query "program synthesis for agents" --max-results 20
+    python tools/arxiv_search.py --query "stock forecasting language model" --source dblp --max-results 10
     python tools/arxiv_search.py download --url "https://arxiv.org/abs/2301.12345" --output-dir phase1-idea/papers/
     python tools/arxiv_search.py download --id "2301.12345" --output-dir phase1-idea/papers/
-    python tools/arxiv_search.py download-top --query "seed scheduling fuzzing" --top 5 --output-dir phase1-idea/papers/
+    python tools/arxiv_search.py download-top --query "time series forecasting" --top 5 --output-dir phase1-idea/papers/
 """
 
 from __future__ import annotations
@@ -272,7 +272,7 @@ def format_papers_md(papers: list[Paper]) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Search for fuzzing research papers")
+    parser = argparse.ArgumentParser(description="Search for research papers")
     sub = parser.add_subparsers(dest="command")
 
     # Default: search mode (backward compatible)

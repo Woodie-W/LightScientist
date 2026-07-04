@@ -5,42 +5,41 @@ description: Reference document for the full end-to-end research flow. In LightS
 
 # Research Pipeline
 
-Reference end-to-end flow: take a fuzzing research topic and produce a paper.
+Reference end-to-end flow: take a research topic and produce a paper or report.
 
 This file is not the active orchestrator in LightScientist. The first-layer
-controller owns state, gates, and stage transitions. Use this file as a high-
-level map for how Phase 1, Phase 2, and Phase 3 connect.
+controller owns state, gates, and stage transitions. Use this file as a high-level map for how Phase 1, Phase 2, and Phase 3 connect.
 
 ## Inputs
 
-- **Research topic**: a fuzzing research direction (e.g., "improve seed scheduling for greybox fuzzing")
-- **Venue** (optional): target publication venue (default: usenix-security)
+- **Research topic**: a concrete research direction, reproduction goal, or analysis target
+- **Venue** (optional): target publication venue or report style
 
 ## Flow
 
-```
+```text
 Topic
-  │
-  ▼
-Phase 1: Idea Engine ──── idea-pipeline
-  │                       (survey → generate → evaluate)
-  │ IDEA_REPORT.md
-  ▼
+  |
+  v
+Phase 1: Idea Engine ---- idea-pipeline
+  |                       (survey -> generate -> evaluate)
+  | IDEA_REPORT.md
+  v
 Gate 1: User confirms idea
-  │
-  ▼
-Phase 2: Experiment Engine ── fuzz-pipeline
-  │                           (setup → loop → analyze)
-  │ EXPERIMENT_RESULTS.md
-  ▼
-Gate 2: Significant results exist
-  │
-  ▼
-Phase 3: Paper Engine ──── paper-pipeline
-  │                        (plan → figure → write → review)
-  │ main.pdf
-  ▼
-Done: Paper ready for submission
+  |
+  v
+Phase 2: Experiment Engine ---- experiment-pipeline
+  |                              (setup -> loop -> analyze)
+  | EXPERIMENT_RESULTS.md
+  v
+Gate 2: Results are strong enough to write up
+  |
+  v
+Phase 3: Paper Engine ---- paper-pipeline
+  |                         (plan -> figure -> write -> review)
+  | main.pdf
+  v
+Done
 ```
 
 ## Procedure
@@ -52,78 +51,46 @@ Run the Phase 1 stages under first-layer control with the research topic.
 **Inputs**: research topic from user
 **Outputs**: `phase1-idea/IDEA_REPORT.md`
 
-**Gate 1**: After the idea pipeline completes, present the selected idea to the user:
-
-```
-═══ Phase 1 Complete: Idea Selected ═══
-
-Research Direction: <topic>
-Selected Idea: <idea name>
-Summary: <1-2 sentences>
-Expected improvement: <metric and range>
-
-Proceed to Phase 2 (experiments)? [yes/no/modify]
-```
-
-Wait for user confirmation. If the user wants modifications, update the idea and re-evaluate. If the user rejects all ideas, return to idea generation with a different direction.
+**Gate 1**: after the idea pipeline completes, present the selected idea to the user.
 
 ### Phase 2: Experiment Loop
 
 Run the Phase 2 stages under first-layer control with:
-- Goal from `IDEA_REPORT.md`
-- Target and fuzzer from the experiment plan in `IDEA_REPORT.md`
+
+- goal from `IDEA_REPORT.md`
+- system under study from the experiment plan
+- baseline and metrics from the experiment plan
 
 **Inputs**: `phase1-idea/IDEA_REPORT.md`
 **Outputs**: `phase2-experiment/EXPERIMENT_RESULTS.md`
 
-This phase runs autonomously and may take hours or days. The agent loops continuously, implementing variations and running experiments.
+This phase runs autonomously and may take hours or days.
 
-**Gate 2**: After the experiment loop ends (user stop, idea exhaustion, or context limit), verify:
+**Gate 2**: after the loop ends, verify:
 
-1. At least one statistically significant improvement was found
-2. `phase2-experiment/EXPERIMENT_RESULTS.md` exists with results
-3. The improvement is publishable (> 5% on primary metric, p < 0.05, A12 > 0.56)
+1. meaningful evidence was produced
+2. `phase2-experiment/EXPERIMENT_RESULTS.md` exists
+3. the results justify writing or clearly justify a negative-results report
 
-If no significant results:
-- Check `research.ideas.md` for untried ideas
-- Consider pivoting to a runner-up idea from `IDEA_REPORT.md`
-- If all avenues exhausted, produce a negative results report and stop
+If no useful result exists:
 
-```
-═══ Phase 2 Complete: Experiments Done ═══
-
-Best Result: <metric> = <value> (+X.X% vs baseline)
-Statistical Significance: p=<value>, A12=<value>
-Total Experiments: <N runs>, <M kept>
-
-Proceed to Phase 3 (paper writing)? [yes/no/more experiments]
-```
+- check `research.ideas.md`
+- consider pivoting to a runner-up idea
+- if exhausted, stop with a negative-results summary
 
 ### Phase 3: Paper Writing
 
 Run the Phase 3 stages under first-layer control with:
-- Venue from user (or default)
-- All Phase 1 and Phase 2 outputs
+
+- venue from user
+- all Phase 1 and Phase 2 outputs
 
 **Inputs**: all prior phase outputs
 **Outputs**: `phase3-paper/paper/main.pdf`
 
-```
-═══ Phase 3 Complete: Paper Ready ═══
-
-Title: <paper title>
-Venue: <target venue>
-PDF: phase3-paper/paper/main.pdf
-Review Score: <X.X/5>
-
-The paper is ready for author review before submission.
-```
-
 ## State Management
 
-The original pipeline encoded state implicitly in the filesystem. In
-LightScientist, `.lightscientist/project_state.json` is the first-layer source
-of truth, while filesystem artifacts remain the execution outputs:
+`.lightscientist/project_state.json` is the first-layer source of truth, while filesystem artifacts remain the execution outputs.
 
 | State Indicator | Meaning |
 |----------------|---------|
@@ -135,21 +102,9 @@ of truth, while filesystem artifacts remain the execution outputs:
 | `phase3-paper/` exists, no `main.pdf` | Phase 3 in progress |
 | `main.pdf` exists | Phase 3 complete |
 
-On resume, detect the current state and continue from the appropriate point.
-
 ## Error Handling
 
-- **Phase 1 fails** (no good ideas): try a different research direction or broaden the scope
-- **Phase 2 fails** (no significant results): try runner-up ideas, or write a negative results paper
-- **Phase 3 fails** (paper doesn't compile): fix LaTeX errors, simplify figures
-- **Any phase interrupted**: resume from the last checkpoint (all phases support resume)
-
-## Time Expectations
-
-| Phase | Typical Duration | Agent-Hours |
-|-------|-----------------|-------------|
-| Phase 1: Ideas | 30-60 minutes | 1-2 |
-| Phase 2: Experiments | 1-7 days | 10-50+ (mostly fuzzer wall clock) |
-| Phase 3: Paper | 2-4 hours | 2-4 |
-
-Phase 2 dominates the timeline because fuzzing experiments require wall-clock time (24h per full run × multiple runs).
+- **Phase 1 fails**: try a different direction or broaden scope
+- **Phase 2 fails**: try runner-up ideas or produce a negative-results report
+- **Phase 3 fails**: fix writing, figure, or compilation issues
+- **Any phase interrupted**: resume from the last checkpoint

@@ -16,7 +16,9 @@
 - [`docs/second-layer-runtime-supervisor.md`](docs/second-layer-runtime-supervisor.md)
 - [`docs/third-layer-execution-runtime.md`](docs/third-layer-execution-runtime.md)
 - [`docs/server-reproduction-debug-manual.md`](docs/server-reproduction-debug-manual.md)
+- [`docs/lightscientist-usage.md`](docs/lightscientist-usage.md)
 - [`docs/lightscientist-webui-design.md`](docs/lightscientist-webui-design.md)
+- [`docs/webui-quickstart.md`](docs/webui-quickstart.md)
 
 ## 当前第三层
 

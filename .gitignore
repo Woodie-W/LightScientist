@@ -12,3 +12,6 @@ examples/moew/workspace/
 dist/
 build/
 *.egg-info/
+
+examples/TabPFN/
+*:Zone.Identifier

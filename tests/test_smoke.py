@@ -23,6 +23,7 @@ from esnext.research_stages import STAGES, stage_spec
 from esnext.runtime import RuntimeSupervisor
 from esnext.runtime import supervisor_event_input
 from esnext.prompts import load_prompt
+from esnext.webui_data import build_overview, safe_read_workspace_file
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -203,15 +204,17 @@ def test_research_controller_builds_experiment_prompt_with_phase2_state(tmp_path
     (tmp_path / "research.md").write_text("goal", encoding="utf-8")
     (tmp_path / "phase2-experiment/worklog.md").write_text("worklog", encoding="utf-8")
     (tmp_path / "research.jsonl").write_text(
-        '{"type":"config","metrics":{"primary":{"name":"branch_cov"}}}\n'
-        '{"run":1,"status":"keep","description":"baseline","results":{"branch_cov":{"mean":64}}}\n',
+        '{"type":"config","metrics":{"primary":{"name":"score"}}}\n'
+        '{"run":1,"status":"keep","description":"baseline","results":{"score":{"mean":64}}}\n',
         encoding="utf-8",
     )
     controller = ResearchController(tmp_path, topic="reproduce paper X", mode="auto", start_stage="experiment.loop")
     prompt = controller.build_stage_prompt()
     assert "Phase 2 state:" in prompt
     assert "- research.jsonl: present" in prompt
-    assert "- runs: 1 | keep: 1" in prompt
+    assert "- runs: 1" in prompt
+    assert "- statuses: keep: 1" in prompt
+    assert "- primary metric: score" in prompt
 
 
 def test_all_configured_stage_skills_exist() -> None:
@@ -224,10 +227,10 @@ def test_copied_skill_dependencies_exist() -> None:
     root = Path("/data/auto-research/LightScientist")
     for rel in (
         "tools/arxiv_search.py",
-        "tools/coverage.py",
-        "tools/crash.py",
-        "templates/fuzz_experiment.sh.tmpl",
-        ):
+        "skills/experiment-setup/SKILL.md",
+        "skills/experiment-loop/SKILL.md",
+        "skills/experiment-analyze/SKILL.md",
+    ):
         assert (root / rel).exists(), rel
 
 
@@ -423,7 +426,7 @@ def test_research_controller_reply_yes_transitions_and_runs_next_stage(tmp_path:
         monkeypatch,
         "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
         "answer: Done.",
-        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl",
+        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"score\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"score\":{\"mean\":64}}}\\n' > research.jsonl",
         "answer: Done.",
         "tool: mkdir -p phase2-experiment && printf 'analysis' > phase2-experiment/EXPERIMENT_RESULTS.md",
         "answer: Done.",
@@ -462,7 +465,7 @@ def test_research_controller_reply_no_revisits_same_phase(tmp_path: Path, monkey
 def test_experiment_loop_stays_in_loop_without_final_results(tmp_path: Path, monkeypatch) -> None:
     patch_scripted_model(
         monkeypatch,
-        "tool: printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl",
+        "tool: printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"score\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"score\":{\"mean\":64}}}\\n' > research.jsonl",
         "answer: Done.",
         scope_root=tmp_path,
     )
@@ -477,7 +480,7 @@ def test_experiment_loop_stays_in_loop_without_final_results(tmp_path: Path, mon
 def test_experiment_loop_advances_to_analyze_when_results_exist(tmp_path: Path, monkeypatch) -> None:
     patch_scripted_model(
         monkeypatch,
-        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl && printf 'results' > phase2-experiment/EXPERIMENT_RESULTS.md",
+        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"score\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"score\":{\"mean\":64}}}\\n' > research.jsonl && printf 'results' > phase2-experiment/EXPERIMENT_RESULTS.md",
         "answer: Done.",
         scope_root=tmp_path,
     )
@@ -508,7 +511,7 @@ def test_cli_research_can_select_start_stage(tmp_path: Path, monkeypatch) -> Non
         monkeypatch,
         "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
         "answer: Done.",
-        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl",
+        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"score\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"score\":{\"mean\":64}}}\\n' > research.jsonl",
         "answer: Done.",
         "tool: mkdir -p phase2-experiment && printf 'analysis' > phase2-experiment/EXPERIMENT_RESULTS.md",
         "answer: Done.",
@@ -526,7 +529,7 @@ def test_cli_research_can_reply_to_manual_gate(tmp_path: Path, monkeypatch) -> N
         monkeypatch,
         "tool: mkdir -p phase2-experiment && printf 'setup' > phase2-experiment/SETUP_COMPLETE.md",
         "answer: Done.",
-        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"branch_cov\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"branch_cov\":{\"mean\":64}}}\\n' > research.jsonl",
+        "tool: mkdir -p phase2-experiment && printf '{\"type\":\"config\",\"metrics\":{\"primary\":{\"name\":\"score\"}}}\\n{\"run\":1,\"status\":\"keep\",\"description\":\"baseline\",\"results\":{\"score\":{\"mean\":64}}}\\n' > research.jsonl",
         "answer: Done.",
         "tool: mkdir -p phase2-experiment && printf 'analysis' > phase2-experiment/EXPERIMENT_RESULTS.md",
         "answer: Done.",
@@ -910,6 +913,39 @@ def test_runtime_supervisor_allows_only_one_worker(tmp_path: Path, monkeypatch) 
     assert second["status"] == "failed"
     assert "limited to one worker" in second["summary"]
     assert len(supervisor._agents) == 1
+
+
+def test_webui_overview_reads_workspace_state(tmp_path: Path) -> None:
+    state_dir = tmp_path / ".lightscientist"
+    state_dir.mkdir()
+    (state_dir / "project_state.json").write_text(
+        json.dumps({"project_id": "demo", "phase": "paper", "stage": "paper.plan", "status": "running", "workspace_root": str(tmp_path)}),
+        encoding="utf-8",
+    )
+    (state_dir / "events.jsonl").write_text(
+        json.dumps({"type": "stage_started", "layer": "L1", "stage": "paper.plan", "time": 1}) + "\n"
+        + json.dumps({"type": "worker_progress", "layer": "L2", "agent_id": "agent-stage-paper-plan", "stage": "paper.plan", "status": "running", "message": "Step 1", "step_count": 1, "action_count": 2, "time": 2}) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".lightscientist" / "skills").mkdir()
+    (tmp_path / ".lightscientist" / "skills" / "paper.plan.md").write_text("skill", encoding="utf-8")
+    (tmp_path / "phase3-paper").mkdir()
+    (tmp_path / "phase3-paper" / "PAPER_PLAN.md").write_text("plan", encoding="utf-8")
+    overview = build_overview(tmp_path)
+    assert overview["state"]["stage"] == "paper.plan"
+    assert overview["workers"][1]["agent_id"] == "agent-stage-paper-plan"
+    assert overview["current_skill"]["path"] == ".lightscientist/skills/paper.plan.md"
+    assert overview["artifacts"][0]["path"] == "phase3-paper/PAPER_PLAN.md"
+
+
+def test_webui_safe_read_workspace_file_blocks_escape(tmp_path: Path) -> None:
+    (tmp_path / "note.md").write_text("hello", encoding="utf-8")
+    assert safe_read_workspace_file(tmp_path, "note.md")["content"] == "hello"
+    try:
+        safe_read_workspace_file(tmp_path, "../outside.txt")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
 
 
 def test_supervisor_prompt_adds_status_specific_guidance() -> None:
