@@ -102,6 +102,7 @@ Fields:
 
 - `run`: sequential number
 - `phase`: `"sanity"` | `"full"` | `"analysis"`
+- `category`: optional optimization category such as `"param_tune"`, `"model_change"`, `"algorithm_flow"`, `"preprocess_change"`, `"feature_selection"`, or `"evaluation_fix"`
 - `commit`: commit hash or other stable revision marker when relevant
 - `status`: `"keep"` | `"discard"` | `"failed"` | `"blocked"`
 - `description`: what this experiment tried
@@ -230,6 +231,36 @@ Every few experiments, update the "What's Been Tried" section with accumulated i
 - Treat failures as data; log them and move on.
 - Parallelize when the project and hardware allow it.
 
+## Adaptive Optimization Strategy
+
+Do not restrict the loop to parameter tuning only unless the project really has
+no other meaningful editable surface.
+
+Preferred progression:
+
+1. start with the cheapest interpretable changes, often parameter tuning
+2. if simple tuning plateaus, consider one deeper but still scoped change
+3. continue with the highest-value next move supported by the current evidence
+
+Common experiment categories:
+
+- `param_tune`
+- `model_change`
+- `algorithm_flow`
+- `preprocess_change`
+- `feature_selection`
+- `evaluation_fix`
+
+Use only categories that actually make sense for the current project.
+
+Guidelines:
+
+- prefer one clear hypothesis per run
+- keep changes small enough that the result is interpretable
+- use the current evidence to decide whether to stay in the same category or switch to another
+- if a project-specific non-parameter optimization is clearly promising, it is valid to try it inside the same `experiment.loop` stage
+- do not force artificial category coverage when the project does not support it
+
 ## Resuming
 
 If `research.md` exists, this is a resume:
@@ -256,6 +287,7 @@ User messages during an experiment are incorporated into the next experiment ste
 ## Procedure
 
 1. Read `research.md` and identify the next highest-value experiment.
+   This may be parameter tuning, a model change, an algorithm-flow change, a preprocessing change, or another scoped project-specific optimization.
 2. If a long-running job is needed, launch it cleanly, record what was started, then use background suspension.
 3. When evidence is available, append a structured row to `research.jsonl`.
 4. Update `phase2-experiment/worklog.md` with:

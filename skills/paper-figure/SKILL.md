@@ -53,6 +53,20 @@ Generate all figures and tables needed for the manuscript.
 - use `\\label{}` and `\\ref{}`
 - use `booktabs`
 
+## Reference-Style Suggestion
+
+If the task has a relevant reference paper, you may borrow one useful figure
+idea from it when the current data supports that view.
+
+Common examples:
+
+- 2D or optional 3D embedding plots
+- baseline vs best-result comparison plots
+- cluster or anomaly overlays
+
+This is optional. Prefer one strong reference-style figure over several weak
+imitations, and keep it grounded in current workspace results.
+
 ## Approach
 
 Read the paper plan, inspect the data, and create figures that directly support:
@@ -61,6 +75,8 @@ Read the paper plan, inspect the data, and create figures that directly support:
 - what was optimized
 - how much changed
 - where the method failed or showed limits when relevant
+
+If a reference-style visualization is useful, prefer one strong figure over many weak ones.
 
 ## Output
 

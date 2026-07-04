@@ -65,6 +65,9 @@ At minimum, report:
 
 Beyond the minimum, explain any interesting pattern that matters scientifically.
 
+If the loop mixed different optimization categories, such as parameter tuning
+and algorithm-flow changes, make that distinction explicit in the analysis.
+
 ## Visualization
 
 Generate whatever plots help understand the results. Common useful visualizations:

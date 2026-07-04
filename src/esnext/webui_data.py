@@ -7,6 +7,9 @@ from typing import Any
 from .research_stages import PHASE_DESCRIPTIONS, STAGES, stage_spec
 
 
+ALLOWED_ARTIFACT_EXTS = {".json", ".md", ".py", ".cpp", ".tex", ".pdf", ".png", ".svg"}
+
+
 def workspace_root(path: str | Path) -> Path:
     return Path(path).resolve()
 
@@ -89,8 +92,7 @@ def list_artifacts(root: Path, limit: int = 24) -> list[dict[str, Any]]:
         if not base.exists():
             continue
         for path in base.rglob("*"):
-            if not path.is_file():
-                continue
+            if not _artifact_allowed(path): continue
             items.append(
                 {
                     "path": str(path.relative_to(root)),
@@ -117,11 +119,10 @@ def artifact_phases(root: Path) -> list[dict[str, Any]]:
             if not path.exists():
                 continue
             if path.is_file():
-                items.append(_artifact_item(root, path, key))
+                if _artifact_allowed(path): items.append(_artifact_item(root, path, key))
                 continue
             for child in sorted(path.rglob("*")):
-                if child.is_file():
-                    items.append(_artifact_item(root, child, key))
+                if _artifact_allowed(child): items.append(_artifact_item(root, child, key))
         items.sort(key=lambda item: item["path"])
         phases.append(
             {
@@ -151,6 +152,10 @@ def _artifact_item(root: Path, path: Path, phase: str) -> dict[str, Any]:
     }
 
 
+def _artifact_allowed(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in ALLOWED_ARTIFACT_EXTS
+
+
 def _artifact_subgroup(relative_path: str, phase: str) -> str:
     parts = Path(relative_path).parts
     if phase == "experiment" and parts and parts[0] != "phase2-experiment":
@@ -162,9 +167,9 @@ def _artifact_subgroup(relative_path: str, phase: str) -> str:
 
 def _preview_kind(path: Path) -> str:
     suffix = path.suffix.lower()
-    if suffix in {".md", ".txt", ".json", ".jsonl", ".tex", ".py", ".log", ".csv", ".yaml", ".yml"}:
+    if suffix in {".md", ".json", ".tex", ".py", ".cpp"}:
         return "text"
-    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}:
+    if suffix in {".png", ".svg"}:
         return "image"
     if suffix == ".pdf":
         return "pdf"

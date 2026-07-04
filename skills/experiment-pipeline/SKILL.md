@@ -53,7 +53,18 @@ Invoke the `experiment-loop` skill:
 
 1. Create or resume `research.md`, `research.jsonl`, and `phase2-experiment/worklog.md`
 2. Read the reproduced baseline result first
-3. Enter the autonomous loop: implement or configure -> sanity -> full evaluation -> analyze -> keep or discard -> repeat
+3. Enter the autonomous loop: choose the highest-value scoped optimization -> sanity -> full evaluation -> analyze -> keep or discard -> repeat
+
+Within the loop, the optimization may be:
+
+- parameter tuning
+- model modification
+- algorithm-flow modification
+- preprocessing change
+- feature-selection change
+- other project-specific scoped improvement
+
+The choice should be adaptive and evidence-driven, not fixed in advance.
 
 The loop runs autonomously until:
 - The first-layer controller or runtime pauses/cancels it
